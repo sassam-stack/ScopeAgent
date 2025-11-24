@@ -264,4 +264,84 @@ public class DrainageAnalysisController : ControllerBase
             return StatusCode(500, new { error = "An error occurred while retrieving OCR results", details = ex.Message });
         }
     }
+
+    /// <summary>
+    /// Get detected symbols for validation
+    /// </summary>
+    [HttpGet("{analysisId}/symbols")]
+    [ProducesResponseType(typeof(List<DetectedSymbol>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetDetectedSymbols(string analysisId)
+    {
+        try
+        {
+            var symbols = await _sessionService.GetDetectedSymbolsAsync(analysisId);
+            return Ok(symbols);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting detected symbols for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while retrieving symbols", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Validate detected symbols (mark which are modules)
+    /// </summary>
+    [HttpPost("{analysisId}/validate-symbols")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> ValidateSymbols(string analysisId, [FromBody] SymbolValidationRequest request)
+    {
+        try
+        {
+            if (request.Validations == null || request.Validations.Count == 0)
+            {
+                return BadRequest(new { error = "Validations are required" });
+            }
+
+            // Get current symbols
+            var symbols = await _sessionService.GetDetectedSymbolsAsync(analysisId);
+            
+            // Update symbols with validation results
+            foreach (var validation in request.Validations)
+            {
+                var symbol = symbols.FirstOrDefault(s => s.Id == validation.SymbolId);
+                if (symbol != null)
+                {
+                    symbol.IsModule = validation.IsModule;
+                }
+            }
+
+            // Store updated symbols
+            await _sessionService.StoreDetectedSymbolsAsync(analysisId, symbols);
+
+            // Update status to continue analysis
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Processing,
+                $"Validated {request.Validations.Count} symbols. Continuing analysis...",
+                ProcessingStage.Analyzing.ToString());
+
+            // Continue processing (trigger next phase)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _processor.ContinueAnalysisAfterValidationAsync(analysisId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error continuing analysis after validation for {AnalysisId}", analysisId);
+                }
+            });
+
+            return Ok(new { message = "Symbols validated successfully", validatedCount = request.Validations.Count });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error validating symbols for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while validating symbols", details = ex.Message });
+        }
+    }
 }

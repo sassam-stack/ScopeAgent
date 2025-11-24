@@ -20,9 +20,15 @@ function DrainagePlanAnalyzer() {
   const [ocrData, setOcrData] = useState(null)
   const [loadingImage, setLoadingImage] = useState(false)
   const [loadingOCR, setLoadingOCR] = useState(false)
+  const [detectedSymbols, setDetectedSymbols] = useState([])
+  const [loadingSymbols, setLoadingSymbols] = useState(false)
+  const [symbolValidations, setSymbolValidations] = useState({})
+  const [validating, setValidating] = useState(false)
+  const [hasPlanImage, setHasPlanImage] = useState(false)
+  const [hasOCRResults, setHasOCRResults] = useState(false)
   const fileInputRef = useRef(null)
 
-  // Poll for status updates
+  // Poll for status updates and check for available data
   useEffect(() => {
     if (!analysisId) return
 
@@ -31,8 +37,27 @@ function DrainagePlanAnalyzer() {
         const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/status`)
         setStatus(response.data)
         
-        // Stop polling if completed or error (handle both string and enum values)
+        // Check if plan image is available (based on stage)
+        const currentStage = String(response.data.currentStage || '').toLowerCase()
         const statusValue = String(response.data.status || '').toLowerCase()
+        
+        // Image should be available after OCR extraction stage or later
+        const imageAvailable = currentStage.includes('ocr') || 
+                              currentStage.includes('symbol') || 
+                              currentStage.includes('analyzing') ||
+                              currentStage.includes('completed') ||
+                              statusValue === 'completed' || statusValue === '2'
+        setHasPlanImage(imageAvailable)
+        
+        // OCR should be available after OCR extraction stage or later
+        const ocrAvailable = currentStage.includes('ocr') || 
+                             currentStage.includes('symbol') || 
+                             currentStage.includes('analyzing') ||
+                             currentStage.includes('completed') ||
+                             statusValue === 'completed' || statusValue === '2'
+        setHasOCRResults(ocrAvailable)
+        
+        // Stop polling if completed or error (handle both string and enum values)
         if (statusValue === 'completed' || statusValue === '2' || 
             statusValue === 'error' || statusValue === '3') {
           return
@@ -199,6 +224,82 @@ function DrainagePlanAnalyzer() {
     setOcrData(null)
   }
 
+  // Fetch detected symbols when status is ReadyForValidation
+  useEffect(() => {
+    if (status && analysisId) {
+      const statusValue = String(status.status || '').toLowerCase()
+      if ((statusValue === 'ready_for_validation' || statusValue === 'readyforvalidation' || statusValue === '1') && detectedSymbols.length === 0) {
+        handleLoadSymbols()
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, analysisId])
+
+  const handleLoadSymbols = async () => {
+    if (!analysisId || loadingSymbols) return
+    
+    setLoadingSymbols(true)
+    try {
+      const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/symbols`)
+      setDetectedSymbols(response.data || [])
+      
+      // Initialize validations (null = not validated yet)
+      const initialValidations = {}
+      response.data?.forEach(symbol => {
+        initialValidations[symbol.id] = symbol.isModule ?? null
+      })
+      setSymbolValidations(initialValidations)
+    } catch (err) {
+      console.error('Error loading symbols:', err)
+      if (err.response?.status !== 404) {
+        alert(`Error loading symbols: ${err.response?.data?.error || err.message}`)
+      }
+    } finally {
+      setLoadingSymbols(false)
+    }
+  }
+
+  const handleSymbolValidationChange = (symbolId, isModule) => {
+    setSymbolValidations(prev => ({
+      ...prev,
+      [symbolId]: isModule
+    }))
+  }
+
+  const handleSubmitValidation = async () => {
+    if (!analysisId || validating) return
+
+    // Filter out symbols that haven't been validated (null values)
+    const validations = Object.entries(symbolValidations)
+      .filter(([_, value]) => value !== null)
+      .map(([symbolId, isModule]) => ({
+        symbolId,
+        isModule
+      }))
+
+    if (validations.length === 0) {
+      alert('Please validate at least one symbol')
+      return
+    }
+
+    setValidating(true)
+    try {
+      await axios.post(`${API_BASE_URL}/drainage/${analysisId}/validate-symbols`, {
+        validations
+      })
+      
+      // Clear symbols and reload status
+      setDetectedSymbols([])
+      setSymbolValidations({})
+      
+      // Status will be updated by polling
+    } catch (err) {
+      alert(`Error submitting validation: ${err.response?.data?.error || err.message}`)
+    } finally {
+      setValidating(false)
+    }
+  }
+
   // Helper function to format status for display
   const formatStatus = (status) => {
     if (!status) return 'Unknown'
@@ -334,10 +435,15 @@ function DrainagePlanAnalyzer() {
                 <button
                   onClick={handleViewPlanImage}
                   disabled={loadingImage || !analysisId}
-                  className="btn btn-preview"
-                  title="View the converted plan page image"
+                  className={`btn btn-preview ${hasPlanImage ? 'available' : 'unavailable'}`}
+                  title={hasPlanImage ? "View the converted plan page image" : "Plan page image not yet available"}
                 >
-                  {loadingImage ? 'Loading...' : '📷 View Plan Image'}
+                  {loadingImage ? 'Loading...' : (
+                    <>
+                      📷 View Plan Image
+                      {hasPlanImage && <span className="status-indicator">✓</span>}
+                    </>
+                  )}
                 </button>
                 {contentTablePage && (
                   <button
@@ -352,12 +458,90 @@ function DrainagePlanAnalyzer() {
                 <button
                   onClick={handleViewOCRResults}
                   disabled={loadingOCR || !analysisId}
-                  className="btn btn-preview"
-                  title="View Azure Computer Vision OCR results"
+                  className={`btn btn-preview ${hasOCRResults ? 'available' : 'unavailable'}`}
+                  title={hasOCRResults ? "View Azure Computer Vision OCR results" : "OCR results not yet available"}
                 >
-                  {loadingOCR ? 'Loading...' : '🔍 View OCR Results'}
+                  {loadingOCR ? 'Loading...' : (
+                    <>
+                      🔍 View OCR Results
+                      {hasOCRResults && <span className="status-indicator">✓</span>}
+                    </>
+                  )}
                 </button>
               </div>
+
+              {/* Symbol Validation Section */}
+              {status && (() => {
+                const statusStr = String(status.status || '').toLowerCase()
+                // Check for ReadyForValidation status (enum value 1 or string variations)
+                return statusStr === '1' || 
+                       statusStr === 'readyforvalidation' ||
+                       statusStr === 'ready_for_validation' ||
+                       (statusStr.includes('ready') && statusStr.includes('validation'))
+              })() && (
+                <div className="symbol-validation-section">
+                  <h4>Validate Detected Symbols</h4>
+                  {loadingSymbols ? (
+                    <p>Loading symbols...</p>
+                  ) : detectedSymbols.length === 0 ? (
+                    <p>No symbols detected yet. Please wait...</p>
+                  ) : (
+                    <>
+                      <p className="validation-instruction">
+                        Please mark which symbols are modules by checking/unchecking the boxes below.
+                      </p>
+                      <div className="symbols-grid">
+                        {detectedSymbols.map((symbol) => (
+                          <div key={symbol.id} className="symbol-card">
+                            {symbol.croppedImage ? (
+                              <img 
+                                src={`data:image/png;base64,${symbol.croppedImage}`}
+                                alt={`Symbol ${symbol.id}`}
+                                className="symbol-image"
+                              />
+                            ) : (
+                              <div className="symbol-placeholder">No Image</div>
+                            )}
+                            <div className="symbol-info">
+                              <div className="symbol-type">{symbol.type || 'Unknown'}</div>
+                              <div className="symbol-confidence">
+                                Confidence: {(symbol.confidence * 100).toFixed(0)}%
+                              </div>
+                            </div>
+                            <label className="symbol-checkbox">
+                              <input
+                                type="checkbox"
+                                checked={symbolValidations[symbol.id] === true}
+                                onChange={(e) => handleSymbolValidationChange(symbol.id, e.target.checked)}
+                              />
+                              <span>This is a module</span>
+                            </label>
+                            {symbolValidations[symbol.id] === false && (
+                              <label className="symbol-checkbox">
+                                <input
+                                  type="checkbox"
+                                  checked={true}
+                                  onChange={(e) => handleSymbolValidationChange(symbol.id, !e.target.checked)}
+                                />
+                                <span>Not a module</span>
+                              </label>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                      <div className="validation-actions">
+                        <button
+                          onClick={handleSubmitValidation}
+                          disabled={validating || Object.values(symbolValidations).filter(v => v !== null).length === 0}
+                          className="btn btn-primary"
+                        >
+                          {validating ? 'Submitting...' : `Submit Validation (${Object.values(symbolValidations).filter(v => v !== null).length} validated)`}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
 
               {status.status === 'completed' && (
                 <div className="results-link">
@@ -399,7 +583,57 @@ function DrainagePlanAnalyzer() {
               </div>
               <div className="modal-body">
                 <div className="ocr-results">
-                  <pre className="ocr-json">{JSON.stringify(ocrData, null, 2)}</pre>
+                  {/* Summary Statistics */}
+                  {ocrData.pages && ocrData.pages.length > 0 && (
+                    <div className="ocr-summary">
+                      <h4>Summary</h4>
+                      <div className="ocr-stats">
+                        <div className="stat-item">
+                          <span className="stat-label">Pages:</span>
+                          <span className="stat-value">{ocrData.pages.length}</span>
+                        </div>
+                        <div className="stat-item">
+                          <span className="stat-label">Total Lines:</span>
+                          <span className="stat-value">
+                            {ocrData.pages.reduce((sum, page) => sum + (page.lines?.length || 0), 0)}
+                          </span>
+                        </div>
+                        <div className="stat-item">
+                          <span className="stat-label">Total Words:</span>
+                          <span className="stat-value">
+                            {ocrData.pages.reduce((sum, page) => 
+                              sum + (page.lines?.reduce((lineSum, line) => lineSum + (line.words?.length || 0), 0) || 0), 0
+                            )}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Text Preview */}
+                  {ocrData.pages && ocrData.pages.length > 0 && (
+                    <div className="ocr-text-preview">
+                      <h4>Extracted Text Preview</h4>
+                      <div className="ocr-text-content">
+                        {ocrData.pages.map((page, pageIdx) => (
+                          <div key={pageIdx} className="ocr-page">
+                            <h5>Page {page.pageNumber || pageIdx + 1}</h5>
+                            {page.lines && page.lines.map((line, lineIdx) => (
+                              <div key={lineIdx} className="ocr-line">
+                                {line.text}
+                              </div>
+                            ))}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Full JSON (Collapsible) */}
+                  <details className="ocr-json-details">
+                    <summary>View Full JSON Data</summary>
+                    <pre className="ocr-json">{JSON.stringify(ocrData, null, 2)}</pre>
+                  </details>
                 </div>
               </div>
             </div>

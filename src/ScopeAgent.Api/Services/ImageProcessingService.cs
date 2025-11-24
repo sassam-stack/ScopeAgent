@@ -244,5 +244,95 @@ public class ImageProcessingService : IImageProcessingService
             throw;
         }
     }
+
+    public async Task<List<DetectedSymbol>> DetectSymbolsAsync(byte[] imageBytes)
+    {
+        try
+        {
+            _logger.LogInformation("Detecting symbols in image");
+            
+            var url = $"{_config.ServiceUrl}/detect-symbols";
+            using var content = new MultipartFormDataContent();
+            var imageContent = new ByteArrayContent(imageBytes);
+            imageContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
+            content.Add(imageContent, "file", "image.png");
+
+            var response = await _httpClient.PostAsync(new Uri(url), content);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync();
+            var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
+
+            var symbols = new List<DetectedSymbol>();
+            if (result.TryGetProperty("symbols", out var symbolsArray))
+            {
+                foreach (var symbol in symbolsArray.EnumerateArray())
+                {
+                    var detectedSymbol = new DetectedSymbol();
+                    
+                    // Parse symbol type
+                    if (symbol.TryGetProperty("type", out var type))
+                    {
+                        var typeStr = type.GetString() ?? "Unknown";
+                        detectedSymbol.Type = typeStr switch
+                        {
+                            "DoubleRectangle" => SymbolType.DoubleRectangle,
+                            "CircleWithGrid" => SymbolType.CircleWithGrid,
+                            "Oval" => SymbolType.Oval,
+                            _ => SymbolType.Unknown
+                        };
+                    }
+                    
+                    // Parse bounding box
+                    if (symbol.TryGetProperty("boundingBox", out var bbox))
+                    {
+                        detectedSymbol.BoundingBox = new BoundingBox();
+                        
+                        // Parse points if available (preferred method)
+                        if (bbox.TryGetProperty("points", out var points))
+                        {
+                            var pointsList = new List<double>();
+                            foreach (var point in points.EnumerateArray())
+                            {
+                                if (point.ValueKind == JsonValueKind.Array && point.GetArrayLength() >= 2)
+                                {
+                                    pointsList.Add(point[0].GetDouble());
+                                    pointsList.Add(point[1].GetDouble());
+                                }
+                            }
+                            if (pointsList.Count >= 8)
+                            {
+                                detectedSymbol.BoundingBox.FromPoints(pointsList);
+                            }
+                        }
+                        else
+                        {
+                            // Fallback to rectangle format
+                            detectedSymbol.BoundingBox.X = bbox.TryGetProperty("x", out var x) ? x.GetDouble() : null;
+                            detectedSymbol.BoundingBox.Y = bbox.TryGetProperty("y", out var y) ? y.GetDouble() : null;
+                            detectedSymbol.BoundingBox.Width = bbox.TryGetProperty("width", out var w) ? w.GetDouble() : null;
+                            detectedSymbol.BoundingBox.Height = bbox.TryGetProperty("height", out var h) ? h.GetDouble() : null;
+                        }
+                    }
+                    
+                    // Parse confidence
+                    if (symbol.TryGetProperty("confidence", out var confidence))
+                    {
+                        detectedSymbol.Confidence = confidence.GetDouble();
+                    }
+                    
+                    symbols.Add(detectedSymbol);
+                }
+            }
+
+            _logger.LogInformation("Detected {Count} symbols", symbols.Count);
+            return symbols;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error detecting symbols");
+            throw;
+        }
+    }
 }
 

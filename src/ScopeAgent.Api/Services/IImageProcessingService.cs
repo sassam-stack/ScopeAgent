@@ -26,6 +26,11 @@ public interface IImageProcessingService
     /// Crop an image to the specified bounding box
     /// </summary>
     Task<byte[]> CropImageAsync(byte[] imageBytes, BoundingBox boundingBox);
+
+    /// <summary>
+    /// Detect symbols in an image (double rectangles, circles with grids, ovals, etc.)
+    /// </summary>
+    Task<List<DetectedSymbol>> DetectSymbolsAsync(byte[] imageBytes);
 }
 
 /// <summary>
