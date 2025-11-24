@@ -417,5 +417,189 @@ public class ComputerVisionService : IComputerVisionService
 
         return OCRHelper.ConvertToStructuredOCR(ocrResponse);
     }
+
+    /// <summary>
+    /// Read text from PDF using Azure Computer Vision Read API
+    /// </summary>
+    public async Task<OCRResult?> ReadTextFromPdfAsync(byte[] pdfBytes)
+    {
+        if (string.IsNullOrEmpty(_config.Endpoint) || string.IsNullOrEmpty(_config.ApiKey))
+        {
+            _logger.LogWarning("Computer Vision not configured. Cannot read text from PDF.");
+            return null;
+        }
+
+        try
+        {
+            _logger.LogInformation("Reading text from PDF with Azure Computer Vision OCR");
+            
+            var endpoint = _config.Endpoint.TrimEnd('/');
+            // Use the Read API endpoint for OCR - it supports PDFs
+            var url = $"{endpoint}/vision/v3.2/read/analyze";
+            
+            using var content = new ByteArrayContent(pdfBytes);
+            // Set content type to application/pdf for PDF files
+            content.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
+            
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(url))
+            {
+                Content = content
+            };
+            request.Headers.Add("Ocp-Apim-Subscription-Key", _config.ApiKey);
+
+            _logger.LogInformation("Sending OCR request for PDF to: {Url}", url);
+            var response = await _httpClient.SendAsync(request);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError("Computer Vision Read API returned error: {StatusCode} - {Error}", response.StatusCode, errorContent);
+                throw new HttpRequestException($"Computer Vision Read API returned {response.StatusCode}: {errorContent}");
+            }
+            
+            // Read API is async - we get an operation location
+            if (response.Headers.Contains("Operation-Location"))
+            {
+                var operationLocation = response.Headers.GetValues("Operation-Location").FirstOrDefault();
+                if (string.IsNullOrEmpty(operationLocation))
+                {
+                    _logger.LogError("No Operation-Location header in response");
+                    return null;
+                }
+
+                _logger.LogInformation("OCR operation started for PDF, polling: {Location}", operationLocation);
+                
+                // Poll for results (max 60 seconds)
+                var maxAttempts = 60;
+                var attempt = 0;
+                
+                while (attempt < maxAttempts)
+                {
+                    await Task.Delay(1000); // Wait 1 second between polls
+                    
+                    using var getRequest = new HttpRequestMessage(HttpMethod.Get, new Uri(operationLocation));
+                    getRequest.Headers.Add("Ocp-Apim-Subscription-Key", _config.ApiKey);
+                    
+                    var getResponse = await _httpClient.SendAsync(getRequest);
+                    getResponse.EnsureSuccessStatusCode();
+                    
+                    var resultContent = await getResponse.Content.ReadAsStringAsync();
+                    var result = JsonSerializer.Deserialize<JsonElement>(resultContent);
+                    
+                    var status = result.TryGetProperty("status", out var statusProp) ? statusProp.GetString() : null;
+                    
+                    if (status == "succeeded")
+                    {
+                        _logger.LogInformation("OCR operation completed for PDF");
+                        
+                        var readResult = new Dictionary<string, object?>();
+                        
+                        if (result.TryGetProperty("analyzeResult", out var analyzeResult))
+                        {
+                            var pages = new List<object>();
+                            if (analyzeResult.TryGetProperty("readResults", out var readResults))
+                            {
+                                foreach (var page in readResults.EnumerateArray())
+                                {
+                                    var pageNumber = page.TryGetProperty("page", out var p) ? p.GetInt32() : 0;
+                                    var width = page.TryGetProperty("width", out var w) ? w.GetInt32() : 0;
+                                    var height = page.TryGetProperty("height", out var h) ? h.GetInt32() : 0;
+                                    
+                                    var lines = new List<object>();
+                                    if (page.TryGetProperty("lines", out var linesArray))
+                                    {
+                                        foreach (var line in linesArray.EnumerateArray())
+                                        {
+                                            var words = new List<object>();
+                                            if (line.TryGetProperty("words", out var wordsArray))
+                                            {
+                                                foreach (var word in wordsArray.EnumerateArray())
+                                                {
+                                                    words.Add(new
+                                                    {
+                                                        text = word.TryGetProperty("text", out var wordText) ? wordText.GetString() : null,
+                                                        confidence = word.TryGetProperty("confidence", out var wordConf) ? wordConf.GetDouble() : 0.0,
+                                                        boundingBox = word.TryGetProperty("boundingBox", out var wordBbox) ? 
+                                                            wordBbox.EnumerateArray().Select(p => p.GetDouble()).ToArray() : null
+                                                    });
+                                                }
+                                            }
+                                            
+                                            lines.Add(new
+                                            {
+                                                text = line.TryGetProperty("text", out var lineText) ? lineText.GetString() : null,
+                                                boundingBox = line.TryGetProperty("boundingBox", out var lineBbox) ? 
+                                                    lineBbox.EnumerateArray().Select(p => p.GetDouble()).ToArray() : null,
+                                                words = words
+                                            });
+                                        }
+                                    }
+                                    
+                                    pages.Add(new
+                                    {
+                                        pageNumber = pageNumber,
+                                        width = width,
+                                        height = height,
+                                        lines = lines
+                                    });
+                                }
+                            }
+                            
+                            readResult["pages"] = pages;
+                            
+                            // Extract all text content
+                            var allText = new System.Text.StringBuilder();
+                            foreach (var pageObj in pages)
+                            {
+                                if (pageObj is Dictionary<string, object?> pageDict)
+                                {
+                                    if (pageDict.TryGetValue("lines", out var pageLines) && pageLines is List<object> linesList)
+                                    {
+                                        foreach (var lineObj in linesList)
+                                        {
+                                            if (lineObj is Dictionary<string, object?> lineDict)
+                                            {
+                                                if (lineDict.TryGetValue("text", out var lineText) && lineText != null)
+                                                {
+                                                    allText.AppendLine(lineText.ToString());
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            readResult["content"] = allText.ToString();
+                        }
+                        
+                        return OCRHelper.ConvertToStructuredOCR(readResult);
+                    }
+                    else if (status == "failed")
+                    {
+                        if (result.TryGetProperty("error", out var errorProp))
+                        {
+                            _logger.LogError("OCR operation failed for PDF: {Error}", errorProp.ToString());
+                        }
+                        else
+                        {
+                            _logger.LogError("OCR operation failed for PDF with unknown error");
+                        }
+                        return null;
+                    }
+                    
+                    attempt++;
+                }
+                
+                _logger.LogWarning("OCR operation timed out for PDF after {Attempts} attempts", maxAttempts);
+                return null;
+            }
+            
+            return null;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error reading text from PDF with Computer Vision");
+            throw;
+        }
+    }
 }
 

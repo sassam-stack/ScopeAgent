@@ -11,5 +11,10 @@ public interface IComputerVisionService
     /// Read text from image and return structured OCR result
     /// </summary>
     Task<OCRResult?> ReadTextStructuredAsync(byte[] imageBytes);
+    
+    /// <summary>
+    /// Read text from PDF and return structured OCR result
+    /// </summary>
+    Task<OCRResult?> ReadTextFromPdfAsync(byte[] pdfBytes);
 }
 

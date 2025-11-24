@@ -4,12 +4,36 @@ FastAPI microservice for computer vision operations using OpenCV.
 
 ## Setup
 
-1. **Install Python dependencies:**
+1. **Install system dependencies (required for PDF to image conversion):**
+   
+   **Windows:**
+   - Download Poppler for Windows from: https://github.com/oschwartz10612/poppler-windows/releases/
+   - Extract the ZIP file (e.g., to `C:\poppler`)
+   - Add the `bin` folder to your system PATH:
+     - Open System Properties → Environment Variables
+     - Edit the `Path` variable in System variables
+     - Add the path to the `bin` folder (e.g., `C:\poppler\Library\bin`)
+     - Restart your terminal/Python service
+   - Or install via chocolatey: `choco install poppler`
+   - **Verify installation:** Open a new terminal and run `pdftoppm -h` - it should show help text
+   
+   **Linux (Ubuntu/Debian):**
+   ```bash
+   sudo apt-get update
+   sudo apt-get install poppler-utils
+   ```
+   
+   **macOS:**
+   ```bash
+   brew install poppler
+   ```
+
+2. **Install Python dependencies:**
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Start the service:**
+3. **Start the service:**
    ```bash
    python main.py
    ```
@@ -20,6 +44,8 @@ FastAPI microservice for computer vision operations using OpenCV.
    ```
 
 The service will be available at `http://localhost:8001`
+
+**Note:** If `pdf2image` is not installed or Poppler is not available, PDF to image conversion will return 501 Not Implemented. The service will still work for other image processing operations.
 
 ## API Endpoints
 
@@ -96,6 +122,52 @@ Crop an image to the specified bounding box.
   "croppedImage": "base64_encoded_image_string",
   "width": 200,
   "height": 150
+}
+```
+
+### `POST /convert-pdf-page`
+Convert a PDF page to an image.
+
+**Request:**
+- Multipart form data with `file` field containing PDF file
+- Query parameters: `page_number` (default: 1), `dpi` (default: 300)
+
+**Response:**
+```json
+{
+  "image": "base64_encoded_image_string",
+  "pageNumber": 1,
+  "width": 2550,
+  "height": 3300,
+  "dpi": 300
+}
+```
+
+**Note:** Requires `pdf2image` Python package and Poppler system library to be installed.
+
+### `POST /detect-symbols`
+Detect symbols in an image (double rectangles, circles with grids, ovals, etc.).
+
+**Request:** Multipart form data with `file` field containing image
+
+**Response:**
+```json
+{
+  "symbols": [
+    {
+      "type": "DoubleRectangle",
+      "boundingBox": {
+        "x": 100,
+        "y": 100,
+        "width": 200,
+        "height": 150,
+        "points": [[100, 100], [300, 100], [300, 250], [100, 250]]
+      },
+      "confidence": 0.85,
+      "area": 30000
+    }
+  ],
+  "count": 1
 }
 ```
 

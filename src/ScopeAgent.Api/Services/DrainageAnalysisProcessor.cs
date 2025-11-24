@@ -144,7 +144,7 @@ public class DrainageAnalysisProcessor
                     // Try OCR on PDF directly
                     try
                     {
-                        ocrResult = await _computerVisionService.ReadTextStructuredAsync(pdfBytes);
+                        ocrResult = await _computerVisionService.ReadTextFromPdfAsync(pdfBytes);
                         if (ocrResult != null && ocrResult.Pages != null && ocrResult.Pages.Count > 0)
                         {
                             // Filter to only the requested page
@@ -188,7 +188,7 @@ public class DrainageAnalysisProcessor
                 try
                 {
                     _logger.LogInformation("Performing OCR on PDF directly (image conversion not available)");
-                    ocrResult = await _computerVisionService.ReadTextStructuredAsync(pdfBytes);
+                    ocrResult = await _computerVisionService.ReadTextFromPdfAsync(pdfBytes);
                     
                     if (ocrResult != null && ocrResult.Pages != null && ocrResult.Pages.Count > 0)
                     {
@@ -408,6 +408,139 @@ public class DrainageAnalysisProcessor
         }
     }
 
+    /// <summary>
+    /// Extract module labels from OCR results with their positions
+    /// </summary>
+    private List<(string Label, Point Position)> ExtractModuleLabelsFromOCR(OCRResult? ocrResult)
+    {
+        var labels = new List<(string Label, Point Position)>();
+        
+        if (ocrResult == null || ocrResult.Pages == null)
+        {
+            return labels;
+        }
+
+        var pattern = new System.Text.RegularExpressions.Regex(@"\b([SM]-\d+|[SM]\d+)\b", 
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
+        foreach (var page in ocrResult.Pages)
+        {
+            if (page.Lines == null) continue;
+
+            foreach (var line in page.Lines)
+            {
+                if (line.Words == null) continue;
+
+                foreach (var word in line.Words)
+                {
+                    var match = pattern.Match(word.Text);
+                    if (match.Success)
+                    {
+                        // Get center of word bounding box
+                        var center = word.BoundingBox.GetCenter();
+                        labels.Add((match.Value, center));
+                    }
+                }
+            }
+        }
+
+        return labels;
+    }
+
+    /// <summary>
+    /// Associate module labels from OCR with validated symbols based on spatial proximity
+    /// </summary>
+    private async Task AssociateModuleLabelsAsync(List<DetectedSymbol> validatedSymbols, OCRResult? ocrResult)
+    {
+        if (validatedSymbols == null || validatedSymbols.Count == 0)
+        {
+            _logger.LogInformation("No validated symbols to associate with labels");
+            return;
+        }
+
+        if (ocrResult == null)
+        {
+            _logger.LogWarning("No OCR results available for label association");
+            return;
+        }
+
+        // Extract module labels with positions from OCR
+        var moduleLabels = ExtractModuleLabelsFromOCR(ocrResult);
+        
+        if (moduleLabels.Count == 0)
+        {
+            _logger.LogInformation("No module labels found in OCR results");
+            return;
+        }
+
+        _logger.LogInformation("Found {LabelCount} module labels in OCR results", moduleLabels.Count);
+
+        // Calculate association threshold (200 pixels or scale-based if available)
+        // For now, use fixed threshold - could be made scale-aware later
+        const double associationThreshold = 200.0;
+
+        // Track which labels have been used
+        var usedLabels = new HashSet<int>();
+
+        // For each validated symbol, find the nearest module label
+        foreach (var symbol in validatedSymbols)
+        {
+            var symbolCenter = symbol.BoundingBox.GetCenter();
+            double minDistance = double.MaxValue;
+            int nearestLabelIndex = -1;
+
+            // Find nearest label
+            for (int i = 0; i < moduleLabels.Count; i++)
+            {
+                if (usedLabels.Contains(i))
+                    continue;
+
+                var distance = symbolCenter.DistanceTo(moduleLabels[i].Position);
+                if (distance < minDistance)
+                {
+                    minDistance = distance;
+                    nearestLabelIndex = i;
+                }
+            }
+
+            // Associate if within threshold
+            if (nearestLabelIndex >= 0 && minDistance < associationThreshold)
+            {
+                symbol.AssociatedModuleLabel = moduleLabels[nearestLabelIndex].Label;
+                usedLabels.Add(nearestLabelIndex);
+                
+                // Calculate association confidence
+                var associationConfidence = 1.0 - (minDistance / associationThreshold);
+                // Update symbol confidence to reflect association
+                symbol.Confidence = Math.Min(0.95, symbol.Confidence + (associationConfidence * 0.1));
+
+                _logger.LogInformation(
+                    "Associated symbol {SymbolId} with label {Label} (distance: {Distance:F1}px, confidence: {Confidence:F2})",
+                    symbol.Id, symbol.AssociatedModuleLabel, minDistance, symbol.Confidence);
+            }
+            else if (nearestLabelIndex >= 0)
+            {
+                _logger.LogInformation(
+                    "Symbol {SymbolId} nearest to label {Label} but distance {Distance:F1}px exceeds threshold {Threshold}px",
+                    symbol.Id, moduleLabels[nearestLabelIndex].Label, minDistance, associationThreshold);
+            }
+        }
+
+        // Log unmatched symbols and labels
+        var unmatchedSymbols = validatedSymbols.Count(s => string.IsNullOrEmpty(s.AssociatedModuleLabel));
+        var unmatchedLabels = moduleLabels.Count - usedLabels.Count;
+
+        if (unmatchedSymbols > 0)
+        {
+            _logger.LogWarning("Found {Count} validated symbols without associated labels", unmatchedSymbols);
+        }
+
+        if (unmatchedLabels > 0)
+        {
+            _logger.LogInformation("Found {Count} module labels without associated symbols", unmatchedLabels);
+        }
+    }
+
     private List<string> ExtractModuleLabelsFromText(string text)
     {
         var labels = new List<string>();
@@ -569,8 +702,8 @@ public class DrainageAnalysisProcessor
             var stLabels = ExtractSTLabelsFromText(pdfText);
             var scaleInfo = ExtractScaleFromText(pdfText);
 
-            // TODO: Associate module labels with validated symbols (STEP-2.6)
-            // For now, just create modules from validated symbols
+            // Associate module labels with validated symbols (STEP-2.6)
+            await AssociateModuleLabelsAsync(validatedModules, ocrResult);
 
             // Create analysis result
             var result = new AnalysisResult
