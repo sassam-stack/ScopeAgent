@@ -2,6 +2,6 @@ namespace ScopeAgent.Api.Services;
 
 public interface IYoloService
 {
-    Task<object?> AnalyzeImageAsync(byte[] imageBytes);
+    Task<object?> AnalyzeImageAsync(byte[] imageBytes, string? context = null);
 }
 

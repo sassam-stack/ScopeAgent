@@ -8,7 +8,9 @@ class YoloConfig:
     MODEL_SIZE: str = os.getenv("YOLO_MODEL_SIZE", "yolo11n")  # yolo11n, yolo11s, yolo11m, yolo11l, yolo11x
     
     # Confidence threshold (0.0 to 1.0)
-    CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE", "0.25"))
+    # Lower values (0.05-0.1) work better for technical drawings and documents
+    # Set very low to extract maximum information from images
+    CONFIDENCE_THRESHOLD: float = float(os.getenv("YOLO_CONFIDENCE", "0.05"))
     
     # Device selection: 'cpu', 'cuda', 'mps' (for Mac)
     DEVICE: str = os.getenv("YOLO_DEVICE", "cpu")

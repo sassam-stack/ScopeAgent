@@ -25,7 +25,7 @@ public class AnalysisController : ControllerBase
     }
 
     [HttpPost("analyze")]
-    public async Task<ActionResult> AnalyzeImage(IFormFile file)
+    public async Task<ActionResult> AnalyzeImage(IFormFile file, [FromForm] bool useComputerVision = true, [FromForm] bool useYolo = true, [FromForm] string? context = null)
     {
         try
         {
@@ -52,15 +52,15 @@ public class AnalysisController : ControllerBase
                 });
             }
 
-            // Read file into byte array
-            byte[] imageBytes;
+            // Read file into byte array - keep original for YOLO
+            byte[] originalImageBytes;
             using (var memoryStream = new MemoryStream())
             {
                 await file.CopyToAsync(memoryStream);
-                imageBytes = memoryStream.ToArray();
+                originalImageBytes = memoryStream.ToArray();
             }
 
-            _logger.LogInformation("Image file read successfully, size: {Size} bytes", imageBytes.Length);
+            _logger.LogInformation("Image file read successfully, size: {Size} bytes", originalImageBytes.Length);
 
             // Azure Computer Vision API limits:
             // - Maximum file size: 4 MB (4,194,304 bytes)
@@ -68,67 +68,161 @@ public class AnalysisController : ControllerBase
             const long maxFileSize = 4 * 1024 * 1024; // 4 MB
             const int maxDimension = 10000;
 
-            // Resize image if it's too large
-            if (imageBytes.Length > maxFileSize)
+            // Prepare image for Computer Vision (resize if needed)
+            byte[] cvImageBytes = originalImageBytes;
+            if (useComputerVision)
             {
-                _logger.LogInformation("Image size {Size} bytes exceeds limit of {MaxSize} bytes. Resizing...", imageBytes.Length, maxFileSize);
-                imageBytes = await ResizeImageAsync(imageBytes, maxFileSize, maxDimension);
-                _logger.LogInformation("Image resized to {Size} bytes", imageBytes.Length);
+                if (cvImageBytes.Length > maxFileSize)
+                {
+                    _logger.LogInformation("Image size {Size} bytes exceeds CV limit of {MaxSize} bytes. Resizing for CV only...", cvImageBytes.Length, maxFileSize);
+                    cvImageBytes = await ResizeImageAsync(cvImageBytes, maxFileSize, maxDimension);
+                    _logger.LogInformation("Image resized for CV to {Size} bytes", cvImageBytes.Length);
+                }
+                else
+                {
+                    // Check dimensions even if file size is OK
+                    try
+                    {
+                        using var image = Image.Load(cvImageBytes);
+                        if (image.Width > maxDimension || image.Height > maxDimension)
+                        {
+                            _logger.LogInformation("Image dimensions {Width}x{Height} exceed CV limit of {MaxDimension}x{MaxDimension}. Resizing for CV only...", 
+                                image.Width, image.Height, maxDimension, maxDimension);
+                            cvImageBytes = await ResizeImageAsync(cvImageBytes, maxFileSize, maxDimension);
+                            _logger.LogInformation("Image resized for CV to {Size} bytes", cvImageBytes.Length);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogWarning(ex, "Could not check image dimensions, proceeding with original image for CV");
+                    }
+                }
             }
-            else
+
+            // Analyze with Computer Vision API (if requested)
+            object? analyzeResult = null;
+            object? readResult = null;
+            string? imageContext = context; // Start with user-provided context
+            
+            if (useComputerVision)
             {
-                // Check dimensions even if file size is OK
+                analyzeResult = await _computerVisionService.AnalyzeImageAsync(cvImageBytes);
+                
+                if (analyzeResult == null)
+                {
+                    _logger.LogWarning("Computer Vision is not configured or failed to analyze the image");
+                }
+                else
+                {
+                    _logger.LogInformation("Computer Vision analysis completed");
+                    
+                    // Extract description/caption from CV results for context
+                    if (analyzeResult is Dictionary<string, object?> cvDict)
+                    {
+                        if (cvDict.TryGetValue("caption", out var caption) && caption != null)
+                        {
+                            var captionDict = caption as Dictionary<string, object?>;
+                            if (captionDict != null && captionDict.TryGetValue("text", out var captionText) && captionText != null)
+                            {
+                                imageContext = captionText.ToString();
+                                _logger.LogInformation("Extracted CV caption as context: {Caption}", imageContext);
+                            }
+                        }
+                        
+                        // Also add top tags as context
+                        if (cvDict.TryGetValue("tags", out var tags) && tags is List<object> tagList && tagList.Count > 0)
+                        {
+                            var topTags = new List<string>();
+                            foreach (var tag in tagList.Take(5))
+                            {
+                                if (tag is Dictionary<string, object?> tagDict)
+                                {
+                                    if (tagDict.TryGetValue("name", out var tagName) && tagName != null)
+                                    {
+                                        topTags.Add(tagName.ToString() ?? "");
+                                    }
+                                }
+                            }
+                            if (topTags.Count > 0)
+                            {
+                                var tagsStr = string.Join(", ", topTags);
+                                imageContext = string.IsNullOrEmpty(imageContext) 
+                                    ? $"Tags: {tagsStr}" 
+                                    : $"{imageContext}. Tags: {tagsStr}";
+                            }
+                        }
+                    }
+                }
+
+                // Also get OCR/text extraction
+                readResult = await _computerVisionService.ReadTextAsync(cvImageBytes);
+                
+                // Extract OCR text as additional context
+                if (readResult != null && readResult is Dictionary<string, object?> readDict)
+                {
+                    if (readDict.TryGetValue("content", out var content) && content != null)
+                    {
+                        var contentStr = content.ToString();
+                        if (!string.IsNullOrEmpty(contentStr) && contentStr.Length > 0)
+                        {
+                            // Use first 200 characters of OCR text as context
+                            var ocrContext = contentStr.Length > 200 
+                                ? contentStr.Substring(0, 200) + "..." 
+                                : contentStr;
+                            imageContext = string.IsNullOrEmpty(imageContext) 
+                                ? $"OCR text: {ocrContext}" 
+                                : $"{imageContext}. OCR: {ocrContext}";
+                            _logger.LogInformation("Added OCR text to context");
+                        }
+                    }
+                }
+            }
+            
+            // Get YOLO analysis (if requested) - use ORIGINAL full resolution image
+            object? yoloResult = null;
+            if (useYolo)
+            {
                 try
                 {
-                    using var image = Image.Load(imageBytes);
-                    if (image.Width > maxDimension || image.Height > maxDimension)
+                    _logger.LogInformation("Sending original full-resolution image to YOLO (size: {Size} bytes)", originalImageBytes.Length);
+                    // Combine user context with extracted context
+                    if (!string.IsNullOrEmpty(context) && !string.IsNullOrEmpty(imageContext) && imageContext != context)
                     {
-                        _logger.LogInformation("Image dimensions {Width}x{Height} exceed limit of {MaxDimension}x{MaxDimension}. Resizing...", 
-                            image.Width, image.Height, maxDimension, maxDimension);
-                        imageBytes = await ResizeImageAsync(imageBytes, maxFileSize, maxDimension);
-                        _logger.LogInformation("Image resized to {Size} bytes", imageBytes.Length);
+                        imageContext = $"{context}. {imageContext}";
+                    }
+                    else if (!string.IsNullOrEmpty(context))
+                    {
+                        imageContext = context;
+                    }
+                    
+                    if (!string.IsNullOrEmpty(imageContext))
+                    {
+                        _logger.LogInformation("Including context: {Context}", imageContext.Substring(0, Math.Min(100, imageContext.Length)));
+                    }
+                    yoloResult = await _yoloService.AnalyzeImageAsync(originalImageBytes, imageContext);
+                    if (yoloResult != null)
+                    {
+                        _logger.LogInformation("YOLO analysis completed");
+                    }
+                    else
+                    {
+                        _logger.LogWarning("YOLO service returned null result (service may be unavailable)");
                     }
                 }
                 catch (Exception ex)
                 {
-                    _logger.LogWarning(ex, "Could not check image dimensions, proceeding with original image");
+                    _logger.LogWarning(ex, "YOLO service error (continuing without YOLO results)");
                 }
             }
-
-            // Analyze with Computer Vision API
-            var analyzeResult = await _computerVisionService.AnalyzeImageAsync(imageBytes);
             
-            if (analyzeResult == null)
+            // Validate that at least one service was requested and returned results
+            if (!useComputerVision && !useYolo)
             {
-                return StatusCode(500, new
+                return BadRequest(new
                 {
                     success = false,
-                    error = "Computer Vision is not configured or failed to analyze the image"
+                    error = "At least one service (Computer Vision or YOLO) must be selected"
                 });
-            }
-
-            _logger.LogInformation("Computer Vision analysis completed");
-
-            // Also get OCR/text extraction
-            var readResult = await _computerVisionService.ReadTextAsync(imageBytes);
-            
-            // Get YOLO analysis (optional - graceful degradation if service unavailable)
-            object? yoloResult = null;
-            try
-            {
-                yoloResult = await _yoloService.AnalyzeImageAsync(imageBytes);
-                if (yoloResult != null)
-                {
-                    _logger.LogInformation("YOLO analysis completed");
-                }
-                else
-                {
-                    _logger.LogWarning("YOLO service returned null result (service may be unavailable)");
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "YOLO service error (continuing without YOLO results)");
             }
             
             // Combine results

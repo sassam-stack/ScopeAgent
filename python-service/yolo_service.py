@@ -52,24 +52,35 @@ class YoloService:
             if model is None:
                 return {"error": "Detection model not loaded"}
             
+            # Get image dimensions for context
+            img_width, img_height = image.size
+            
+            # Use very low confidence threshold to extract maximum information
+            # Try multiple thresholds to get all possible detections
             results = model.predict(
                 image,
-                conf=self.config.CONFIDENCE_THRESHOLD,
+                conf=0.01,  # Extremely low threshold to get everything
                 iou=self.config.IOU_THRESHOLD,
                 device=self.config.DEVICE,
                 verbose=False
             )
             
             detections = []
+            all_detections_low_conf = []  # Track all detections for reference
+            
             for result in results:
                 boxes = result.boxes
+                
+                # Get ALL detections regardless of confidence
                 for i in range(len(boxes)):
                     box = boxes[i]
                     cls = int(box.cls[0])
                     conf = float(box.conf[0])
+                    
+                    # Include ALL detections - no filtering
                     xyxy = box.xyxy[0].cpu().numpy().tolist()
                     
-                    detections.append({
+                    detection = {
                         "class": result.names[cls],
                         "class_id": cls,
                         "confidence": conf,
@@ -81,14 +92,41 @@ class YoloService:
                             "width": float(xyxy[2] - xyxy[0]),
                             "height": float(xyxy[3] - xyxy[1])
                         }
+                    }
+                    
+                    # Add ALL detections to the list
+                    detections.append(detection)
+                    
+                    # Track all for reference
+                    all_detections_low_conf.append({
+                        "class": result.names[cls],
+                        "confidence": conf
                     })
             
-            return {
-                "objects": detections,
-                "count": len(detections)
+            # Sort all detections by confidence for debug info
+            all_detections_sorted = sorted(all_detections_low_conf, key=lambda x: x['confidence'], reverse=True)
+            
+            # Sort detections by confidence (highest first)
+            detections_sorted = sorted(detections, key=lambda x: x['confidence'], reverse=True)
+            
+            result_dict = {
+                "objects": detections_sorted,
+                "count": len(detections_sorted),
+                "image_info": {
+                    "width": img_width,
+                    "height": img_height
+                },
+                "config": {
+                    "confidence_threshold": 0.01,  # Actual threshold used
+                    "iou_threshold": self.config.IOU_THRESHOLD,
+                    "note": "All detections included - no filtering applied"
+                }
             }
+            
+            return result_dict
         except Exception as e:
-            return {"error": str(e)}
+            import traceback
+            return {"error": f"{str(e)}\n{traceback.format_exc()}"}
     
     def segment(self, image_bytes: bytes) -> Dict[str, Any]:
         """Run instance segmentation on image"""
@@ -102,9 +140,10 @@ class YoloService:
                 if model is None:
                     return {"error": "Segmentation model not loaded"}
             
+            # Use very low confidence to get all segments
             results = model.predict(
                 image,
-                conf=self.config.CONFIDENCE_THRESHOLD,
+                conf=0.01,  # Extremely low threshold to get everything
                 iou=self.config.IOU_THRESHOLD,
                 device=self.config.DEVICE,
                 verbose=False
@@ -122,10 +161,29 @@ class YoloService:
                         conf = float(box.conf[0])
                         xyxy = box.xyxy[0].cpu().numpy().tolist()
                         
-                        # Get mask data
+                        # Get mask data - handle both tensor and numpy array cases
                         mask = masks[i]
-                        mask_data = mask.data[0].cpu().numpy()
-                        mask_points = mask.xy[0].cpu().numpy().tolist()
+                        try:
+                            # Try as tensor first
+                            if hasattr(mask.data[0], 'cpu'):
+                                mask_data = mask.data[0].cpu().numpy()
+                            else:
+                                # Already a numpy array
+                                mask_data = np.array(mask.data[0])
+                        except:
+                            # Fallback: try direct access
+                            mask_data = np.array(mask.data[0]) if hasattr(mask.data[0], '__array__') else mask.data[0]
+                        
+                        try:
+                            # Try as tensor first
+                            if hasattr(mask.xy[0], 'cpu'):
+                                mask_points = mask.xy[0].cpu().numpy().tolist()
+                            else:
+                                # Already a numpy array
+                                mask_points = np.array(mask.xy[0]).tolist()
+                        except:
+                            # Fallback: try direct access
+                            mask_points = np.array(mask.xy[0]).tolist() if hasattr(mask.xy[0], '__array__') else mask.xy[0].tolist()
                         
                         segments.append({
                             "class": result.names[cls],
@@ -148,7 +206,8 @@ class YoloService:
                 "count": len(segments)
             }
         except Exception as e:
-            return {"error": str(e)}
+            import traceback
+            return {"error": f"{str(e)}\n{traceback.format_exc()}"}
     
     def pose(self, image_bytes: bytes) -> Dict[str, Any]:
         """Run pose estimation on image"""
@@ -159,9 +218,10 @@ class YoloService:
             if model is None:
                 return {"error": "Pose estimation model not loaded"}
             
+            # Use very low confidence to get all poses
             results = model.predict(
                 image,
-                conf=self.config.CONFIDENCE_THRESHOLD,
+                conf=0.01,  # Extremely low threshold to get everything
                 iou=self.config.IOU_THRESHOLD,
                 device=self.config.DEVICE,
                 verbose=False
@@ -251,13 +311,34 @@ class YoloService:
         except Exception as e:
             return {"error": str(e)}
     
-    def analyze_all(self, image_bytes: bytes) -> Dict[str, Any]:
-        """Run all YOLO analyses on image"""
+    def analyze_all(self, image_bytes: bytes, context: Optional[str] = None) -> Dict[str, Any]:
+        """Run all YOLO analyses on image with optional context"""
+        # Get image info once
+        image = self._image_from_bytes(image_bytes)
+        img_width, img_height = image.size
+        
         result = {
             "detection": self.detect(image_bytes),
             "segmentation": self.segment(image_bytes),
             "pose": self.pose(image_bytes),
-            "classification": self.classify(image_bytes)
+            "classification": self.classify(image_bytes),
+            "image_info": {
+                "width": img_width,
+                "height": img_height,
+                "format": image.format or "unknown"
+            },
+            "context": {
+                "provided": context is not None and len(context.strip()) > 0,
+                "description": context.strip() if context else "No context provided"
+            },
+            "model_info": {
+                "detection_model": "loaded" if self.models.get('detect') else "not loaded",
+                "segmentation_model": "loaded" if self.models.get('segment') else "not loaded",
+                "pose_model": "loaded" if self.models.get('pose') else "not loaded",
+                "classification_model": "loaded" if self.models.get('classify') else "not loaded",
+                "note": "YOLO models are trained on general objects (COCO dataset). For construction/technical drawings, results may be limited. Context helps interpret results."
+            }
         }
         return result
+
 

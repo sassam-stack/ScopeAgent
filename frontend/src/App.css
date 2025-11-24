@@ -6,13 +6,9 @@
 
 .app-container {
   background: white;
-  border-radius: 16px;
-  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
-  overflow: hidden;
   display: flex;
   flex-direction: column;
-  height: 90vh;
-  max-height: 900px;
+  min-height: 100vh;
 }
 
 .app-header {

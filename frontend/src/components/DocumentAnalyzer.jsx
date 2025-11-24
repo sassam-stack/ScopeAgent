@@ -10,6 +10,9 @@ function DocumentAnalyzer() {
   const [result, setResult] = useState(null)
   const [error, setError] = useState(null)
   const [selectedFile, setSelectedFile] = useState(null)
+  const [useComputerVision, setUseComputerVision] = useState(true)
+  const [useYolo, setUseYolo] = useState(true)
+  const [imageContext, setImageContext] = useState('')
   const fileInputRef = useRef(null)
 
   const handleFileSelect = async (file) => {
@@ -23,6 +26,11 @@ function DocumentAnalyzer() {
     try {
       const formData = new FormData()
       formData.append('file', file)
+      formData.append('useComputerVision', useComputerVision)
+      formData.append('useYolo', useYolo)
+      if (imageContext.trim()) {
+        formData.append('context', imageContext.trim())
+      }
 
       const response = await axios.post(`${API_BASE_URL}/analysis/analyze`, formData, {
         headers: {
@@ -80,6 +88,48 @@ function DocumentAnalyzer() {
               </span>
             )}
           </div>
+          <div className="service-selection">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={useComputerVision}
+                onChange={(e) => setUseComputerVision(e.target.checked)}
+                disabled={isLoading}
+              />
+              <span>Azure Computer Vision</span>
+            </label>
+            <label className="checkbox-label" title="YOLO is best for photos with people, vehicles, animals. Not suitable for construction plans or technical drawings.">
+              <input
+                type="checkbox"
+                checked={useYolo}
+                onChange={(e) => setUseYolo(e.target.checked)}
+                disabled={isLoading}
+              />
+              <span>YOLO Analysis <span style={{ fontSize: '0.85em', color: '#999' }}>(general objects only)</span></span>
+            </label>
+          </div>
+          <div className="input-group" style={{ marginTop: '16px' }}>
+            <label htmlFor="image-context">Image Context (optional):</label>
+            <input
+              id="image-context"
+              type="text"
+              value={imageContext}
+              onChange={(e) => setImageContext(e.target.value)}
+              placeholder="e.g., Construction drainage plan, technical drawing, architectural blueprint, etc."
+              disabled={isLoading}
+              style={{
+                width: '100%',
+                padding: '12px 16px',
+                border: '2px solid #e0e0e0',
+                borderRadius: '6px',
+                fontSize: '14px',
+                marginTop: '8px'
+              }}
+            />
+            <div className="input-hint" style={{ marginTop: '4px' }}>
+              Provide context about the image to help interpret YOLO results. Context is also automatically extracted from Computer Vision analysis.
+            </div>
+          </div>
           <div className="input-hint">
             Supported formats: JPG, PNG, GIF, BMP, WebP
           </div>
@@ -88,7 +138,12 @@ function DocumentAnalyzer() {
         {isLoading && (
           <div className="loading-section">
             <div className="spinner"></div>
-            <span>Analyzing image with Azure Computer Vision...</span>
+            <span>
+              Analyzing image...
+              {useComputerVision && useYolo && ' (Computer Vision & YOLO)'}
+              {useComputerVision && !useYolo && ' (Computer Vision)'}
+              {!useComputerVision && useYolo && ' (YOLO)'}
+            </span>
           </div>
         )}
 

@@ -1,6 +1,7 @@
-from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from typing import Optional
 import uvicorn
 from yolo_service import YoloService
 import logging
@@ -29,9 +30,13 @@ async def health_check():
     return {"status": "healthy", "service": "YOLO Analysis"}
 
 @app.post("/analyze")
-async def analyze_all(file: UploadFile = File(...)):
+async def analyze_all(
+    file: UploadFile = File(...),
+    context: Optional[str] = Form(None)
+):
     """
     Run all YOLO analyses (detection, segmentation, pose, classification) on uploaded image
+    Optional context parameter to provide image description/context
     """
     try:
         if not file.content_type or not file.content_type.startswith('image/'):
@@ -43,8 +48,10 @@ async def analyze_all(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Image file is empty")
         
         logger.info(f"Processing image: {file.filename}, size: {len(image_bytes)} bytes")
+        if context:
+            logger.info(f"Context provided: {context[:100]}...")
         
-        result = yolo_service.analyze_all(image_bytes)
+        result = yolo_service.analyze_all(image_bytes, context)
         
         return JSONResponse(content=result)
     
