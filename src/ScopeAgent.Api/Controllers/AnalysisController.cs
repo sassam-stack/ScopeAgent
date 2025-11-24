@@ -11,21 +11,24 @@ namespace ScopeAgent.Api.Controllers;
 public class AnalysisController : ControllerBase
 {
     private readonly IComputerVisionService _computerVisionService;
-    private readonly IYoloService _yoloService;
+    // NOTE: YOLO service is currently disabled - preserved for future use
+    // private readonly IYoloService _yoloService;
     private readonly ILogger<AnalysisController> _logger;
 
     public AnalysisController(
         IComputerVisionService computerVisionService,
-        IYoloService yoloService,
+        // NOTE: YOLO service is currently disabled - preserved for future use
+        // IYoloService yoloService,
         ILogger<AnalysisController> logger)
     {
         _computerVisionService = computerVisionService;
-        _yoloService = yoloService;
+        // NOTE: YOLO service is currently disabled - preserved for future use
+        // _yoloService = yoloService;
         _logger = logger;
     }
 
     [HttpPost("analyze")]
-    public async Task<ActionResult> AnalyzeImage(IFormFile file, [FromForm] bool useComputerVision = true, [FromForm] bool useYolo = true, [FromForm] string? context = null)
+    public async Task<ActionResult> AnalyzeImage(IFormFile file, [FromForm] bool useComputerVision = true, [FromForm] bool useYolo = false, [FromForm] string? context = null)
     {
         try
         {
@@ -179,9 +182,13 @@ public class AnalysisController : ControllerBase
             }
             
             // Get YOLO analysis (if requested) - use ORIGINAL full resolution image
+            // NOTE: YOLO service is currently disabled - preserved for future use
             object? yoloResult = null;
             if (useYolo)
             {
+                _logger.LogWarning("YOLO service is currently disabled. Set useYolo=false or remove the parameter.");
+                // NOTE: YOLO service code preserved but disabled
+                /*
                 try
                 {
                     _logger.LogInformation("Sending original full-resolution image to YOLO (size: {Size} bytes)", originalImageBytes.Length);
@@ -213,15 +220,17 @@ public class AnalysisController : ControllerBase
                 {
                     _logger.LogWarning(ex, "YOLO service error (continuing without YOLO results)");
                 }
+                */
             }
             
             // Validate that at least one service was requested and returned results
-            if (!useComputerVision && !useYolo)
+            // NOTE: YOLO is disabled, so only Computer Vision is required
+            if (!useComputerVision)
             {
                 return BadRequest(new
                 {
                     success = false,
-                    error = "At least one service (Computer Vision or YOLO) must be selected"
+                    error = "Computer Vision service must be enabled (YOLO service is currently disabled)"
                 });
             }
             
@@ -241,13 +250,14 @@ public class AnalysisController : ControllerBase
                 combinedResult["text"] = readResult;
             }
             
-            if (yoloResult != null)
-            {
-                combinedResult["yolo"] = yoloResult;
-            }
+            // NOTE: YOLO service is currently disabled
+            // if (yoloResult != null)
+            // {
+            //     combinedResult["yolo"] = yoloResult;
+            // }
 
-            _logger.LogInformation("Image analysis completed (Computer Vision: {HasCV}, OCR: {HasOCR}, YOLO: {HasYolo})", 
-                analyzeResult != null, readResult != null, yoloResult != null);
+            _logger.LogInformation("Image analysis completed (Computer Vision: {HasCV}, OCR: {HasOCR})", 
+                analyzeResult != null, readResult != null);
 
             // Return the combined result
             return Ok(combinedResult);

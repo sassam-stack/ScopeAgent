@@ -26,14 +26,17 @@ builder.Services.AddHttpClient<IAzureBlobService, AzureBlobService>();
 builder.Services.AddHttpClient<IComputerVisionService, ComputerVisionService>();
 
 // Register HttpClient for YOLO Service
-builder.Services.AddHttpClient<IYoloService, YoloService>();
+// NOTE: YOLO service is currently disabled - preserved for future use
+// builder.Services.AddHttpClient<IYoloService, YoloService>();
 
 // Register services
 builder.Services.AddScoped<IComputerVisionService, ComputerVisionService>();
-builder.Services.AddScoped<IYoloService, YoloService>();
+// NOTE: YOLO service is currently disabled - preserved for future use
+// builder.Services.AddScoped<IYoloService, YoloService>();
 
 // Configuration
 builder.Services.Configure<ComputerVisionConfig>(builder.Configuration.GetSection("ComputerVision"));
+// NOTE: YOLO config is kept but service is disabled
 builder.Services.Configure<YoloConfig>(builder.Configuration.GetSection("Yolo"));
 
 var app = builder.Build();
