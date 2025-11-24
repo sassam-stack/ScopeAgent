@@ -25,17 +25,25 @@ builder.Services.AddHttpClient<IAzureBlobService, AzureBlobService>();
 // Register HttpClient for Computer Vision Service
 builder.Services.AddHttpClient<IComputerVisionService, ComputerVisionService>();
 
+// Register HttpClient for Image Processing Service
+builder.Services.AddHttpClient<IImageProcessingService, ImageProcessingService>();
+
 // Register HttpClient for YOLO Service
 // NOTE: YOLO service is currently disabled - preserved for future use
 // builder.Services.AddHttpClient<IYoloService, YoloService>();
 
 // Register services
 builder.Services.AddScoped<IComputerVisionService, ComputerVisionService>();
+builder.Services.AddScoped<IPdfProcessingService, PdfProcessingService>();
+builder.Services.AddScoped<IImageProcessingService, ImageProcessingService>();
+builder.Services.AddSingleton<IAnalysisSessionService, AnalysisSessionService>();
+builder.Services.AddScoped<DrainageAnalysisProcessor>();
 // NOTE: YOLO service is currently disabled - preserved for future use
 // builder.Services.AddScoped<IYoloService, YoloService>();
 
 // Configuration
 builder.Services.Configure<ComputerVisionConfig>(builder.Configuration.GetSection("ComputerVision"));
+builder.Services.Configure<ImageProcessingConfig>(builder.Configuration.GetSection("ImageProcessing"));
 // NOTE: YOLO config is kept but service is disabled
 builder.Services.Configure<YoloConfig>(builder.Configuration.GetSection("Yolo"));
 

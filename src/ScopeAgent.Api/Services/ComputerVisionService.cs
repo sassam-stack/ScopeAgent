@@ -1,6 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
+using ScopeAgent.Api.Models.DrainageAnalysis;
 
 namespace ScopeAgent.Api.Services;
 
@@ -406,6 +407,15 @@ public class ComputerVisionService : IComputerVisionService
             _logger.LogError(ex, "Error reading text from image with Computer Vision");
             throw;
         }
+    }
+
+    public async Task<OCRResult?> ReadTextStructuredAsync(byte[] imageBytes)
+    {
+        var ocrResponse = await ReadTextAsync(imageBytes);
+        if (ocrResponse == null)
+            return null;
+
+        return OCRHelper.ConvertToStructuredOCR(ocrResponse);
     }
 }
 

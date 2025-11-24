@@ -1,4 +1,4 @@
-import DocumentAnalyzer from './components/DocumentAnalyzer'
+import DrainagePlanAnalyzer from './components/DrainagePlanAnalyzer'
 import './App.css'
 
 function App() {
@@ -7,9 +7,9 @@ function App() {
       <div className="app-container">
         <header className="app-header">
           <h1>Scope Agent</h1>
-          <p>Azure Computer Vision Image Analyzer</p>
+          <p>Construction Drainage Plan Analyzer</p>
         </header>
-        <DocumentAnalyzer />
+        <DrainagePlanAnalyzer />
       </div>
     </div>
   )
