@@ -257,9 +257,11 @@ def detect_double_rectangles(img: np.ndarray) -> List[dict]:
     
     # Process each contour
     for i, contour in enumerate(contours):
-        # Skip small contours
+        # Skip small contours - module symbols should be reasonably sized
         area = cv2.contourArea(contour)
-        if area < 500:  # Minimum area threshold
+        # Relaxed for OCR-guided detection: symbols should be between 400-20000 pixels² (20x20 to 140x140)
+        # Since we're only searching near module labels, we can be more lenient
+        if area < 400 or area > 20000:  # Relaxed area threshold
             continue
         
         # Approximate contour to polygon
@@ -270,6 +272,16 @@ def detect_double_rectangles(img: np.ndarray) -> List[dict]:
         if len(approx) == 4:
             # Get bounding box
             x, y, w, h = cv2.boundingRect(approx)
+            
+            # Relaxed size filter for OCR-guided detection (we're only searching near module labels)
+            # Symbols should be reasonably sized, but can vary more since we're in a focused area
+            if w < 20 or h < 20 or w > 140 or h > 140:
+                continue
+            
+            # Relaxed aspect ratio for OCR-guided detection
+            aspect_ratio = w / h if h > 0 else 0
+            if aspect_ratio < 0.4 or aspect_ratio > 2.5:
+                continue
             
             # Check for nested rectangle (child contour)
             has_nested = False
@@ -296,25 +308,37 @@ def detect_double_rectangles(img: np.ndarray) -> List[dict]:
                             has_nested = True
                             confidence = 0.85  # High confidence for double rectangle
             
-            # Only include if it has nested rectangle (double frame)
+            # Include if it has nested rectangle (double frame) OR if it's a clear rectangle
+            # For OCR-guided detection, we can be more lenient since we're already near module labels
             if has_nested:
-                # Calculate bounding box points (4 corners)
-                points = []
-                for point in approx:
-                    points.append([int(point[0][0]), int(point[0][1])])
-                
-                detected_symbols.append({
-                    "type": "DoubleRectangle",
-                    "boundingBox": {
-                        "x": int(x),
-                        "y": int(y),
-                        "width": int(w),
-                        "height": int(h),
-                        "points": points
-                    },
-                    "confidence": confidence,
-                    "area": int(area)
-                })
+                # High confidence for double rectangle
+                confidence = 0.85
+            else:
+                # Lower confidence for single rectangle, but still include it
+                # This helps when the nested detection fails but the shape is clearly a symbol
+                confidence = 0.65
+                # Only include if it's a reasonably sized rectangle (not a text box)
+                if w < 25 or h < 25:
+                    continue
+            
+            # Include both nested and non-nested rectangles (we're already in a focused search area)
+            # Calculate bounding box points (4 corners)
+            points = []
+            for point in approx:
+                points.append([int(point[0][0]), int(point[0][1])])
+            
+            detected_symbols.append({
+                "type": "DoubleRectangle",
+                "boundingBox": {
+                    "x": int(x),
+                    "y": int(y),
+                    "width": int(w),
+                    "height": int(h),
+                    "points": points
+                },
+                "confidence": confidence,
+                "area": int(area)
+            })
     
     return detected_symbols
 
@@ -335,10 +359,11 @@ def detect_circles_with_grids(img: np.ndarray) -> List[dict]:
     # Apply Gaussian blur for better circle detection
     gray_blurred = cv2.medianBlur(gray, 5)
     
-    # Detect circles
+    # Detect circles - Relaxed for OCR-guided detection
+    # minRadius=10 means diameter=20, maxRadius=70 means diameter=140
     circles = cv2.HoughCircles(
         gray_blurred, cv2.HOUGH_GRADIENT, 1, 20,
-        param1=50, param2=30, minRadius=15, maxRadius=200
+        param1=50, param2=30, minRadius=10, maxRadius=70  # Relaxed: 10-70px radius (20-140px diameter)
     )
     
     detected_symbols = []
@@ -351,8 +376,8 @@ def detect_circles_with_grids(img: np.ndarray) -> List[dict]:
     for circle in circles[0, :]:
         center_x, center_y, radius = circle
         
-        # Skip circles that are too small
-        if radius < 15:
+        # Relaxed size filter for OCR-guided detection
+        if radius < 10 or radius > 70:  # 10-70px radius = 20-140px diameter
             continue
         
         # Create a region of interest (ROI) with padding
@@ -408,7 +433,8 @@ def detect_circles_with_grids(img: np.ndarray) -> List[dict]:
             elif 75 < angle < 105:
                 vertical_lines.append(line[0])
         
-        # Check if we have a grid pattern (at least 2 horizontal and 2 vertical lines)
+        # Relaxed grid pattern for OCR-guided detection
+        # At least 2 horizontal and 2 vertical lines (allows simpler grids)
         if len(horizontal_lines) >= 2 and len(vertical_lines) >= 2:
             # Calculate grid quality
             grid_quality = min(1.0, (len(horizontal_lines) * len(vertical_lines)) / 4.0)
@@ -468,9 +494,10 @@ def detect_ovals(img: np.ndarray) -> List[dict]:
     detected_symbols = []
     
     for contour in contours:
-        # Skip small contours
+        # Relaxed size filter for OCR-guided detection
         area = cv2.contourArea(contour)
-        if area < 300:  # Minimum area threshold
+        # Relaxed: symbols should be between 400-20000 pixels² (20x20 to 140x140)
+        if area < 400 or area > 20000:  # Relaxed area threshold
             continue
         
         # Need at least 5 points to fit an ellipse
@@ -508,6 +535,15 @@ def detect_ovals(img: np.ndarray) -> List[dict]:
             # Get bounding box
             bbox = cv2.boundingRect(contour)
             x, y, w, h = bbox
+            
+            # Relaxed size filter for OCR-guided detection
+            if w < 20 or h < 20 or w > 140 or h > 140:
+                continue
+            
+            # Relaxed aspect ratio for OCR-guided detection
+            bbox_aspect = w / h if h > 0 else 0
+            if bbox_aspect < 0.4 or bbox_aspect > 2.5:
+                continue
             
             # Calculate confidence: base + fit quality
             confidence = 0.65 + (fit_quality * 0.25)
@@ -564,6 +600,13 @@ async def detect_symbols(file: UploadFile = File(...)):
         detected_symbols.extend(ovals)
         
         logger.info(f"Detected {len(detected_symbols)} symbols (rectangles: {len(double_rects)}, circles with grids: {len(circle_grids)}, ovals: {len(ovals)})")
+        
+        # Log size distribution for debugging
+        if len(detected_symbols) > 0:
+            sizes = [(s["boundingBox"]["width"], s["boundingBox"]["height"]) for s in detected_symbols]
+            avg_w = sum(w for w, h in sizes) / len(sizes)
+            avg_h = sum(h for w, h in sizes) / len(sizes)
+            logger.info(f"Average symbol size: {avg_w:.1f}x{avg_h:.1f}px")
         
         return JSONResponse(content={
             "symbols": detected_symbols,

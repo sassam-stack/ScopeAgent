@@ -295,32 +295,46 @@ public class DrainageAnalysisController : ControllerBase
     {
         try
         {
-            if (request.Validations == null || request.Validations.Count == 0)
-            {
-                return BadRequest(new { error = "Validations are required" });
-            }
-
             // Get current symbols
             var symbols = await _sessionService.GetDetectedSymbolsAsync(analysisId);
             
-            // Update symbols with validation results
-            foreach (var validation in request.Validations)
+            // Allow empty validations if no symbols were detected (user can proceed with text-only analysis)
+            if (request.Validations == null || request.Validations.Count == 0)
             {
-                var symbol = symbols.FirstOrDefault(s => s.Id == validation.SymbolId);
-                if (symbol != null)
+                if (symbols.Count == 0)
                 {
-                    symbol.IsModule = validation.IsModule;
+                    _logger.LogInformation("No symbols detected and no validations provided - proceeding with text-only analysis");
+                    // Continue with analysis even without symbol validation
+                }
+                else
+                {
+                    return BadRequest(new { error = "Validations are required when symbols are detected" });
                 }
             }
+            else
+            {
+                // Update symbols with validation results
+                foreach (var validation in request.Validations)
+                {
+                    var symbol = symbols.FirstOrDefault(s => s.Id == validation.SymbolId);
+                    if (symbol != null)
+                    {
+                        symbol.IsModule = validation.IsModule;
+                    }
+                }
 
-            // Store updated symbols
-            await _sessionService.StoreDetectedSymbolsAsync(analysisId, symbols);
+                // Store updated symbols
+                await _sessionService.StoreDetectedSymbolsAsync(analysisId, symbols);
+            }
 
             // Update status to continue analysis
+            var validationCount = request.Validations?.Count ?? 0;
             await _sessionService.UpdateSessionStatusAsync(
                 analysisId,
                 AnalysisStatus.Processing,
-                $"Validated {request.Validations.Count} symbols. Continuing analysis...",
+                validationCount > 0 
+                    ? $"Validated {validationCount} symbols. Continuing analysis..."
+                    : "No symbols to validate. Continuing with text-based analysis...",
                 ProcessingStage.Analyzing.ToString());
 
             // Continue processing (trigger next phase)
@@ -336,12 +350,171 @@ public class DrainageAnalysisController : ControllerBase
                 }
             });
 
-            return Ok(new { message = "Symbols validated successfully", validatedCount = request.Validations.Count });
+            return Ok(new { message = "Symbols validated successfully", validatedCount = request.Validations?.Count ?? 0 });
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error validating symbols for {AnalysisId}", analysisId);
             return StatusCode(500, new { error = "An error occurred while validating symbols", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get detected pipes for an analysis session
+    /// </summary>
+    [HttpGet("{analysisId}/pipes")]
+    [ProducesResponseType(typeof(List<Pipe>), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetDetectedPipes(string analysisId)
+    {
+        try
+        {
+            var result = await _sessionService.GetAnalysisResultAsync(analysisId);
+            if (result == null)
+            {
+                return NotFound(new { error = $"Analysis results for {analysisId} not found" });
+            }
+
+            return Ok(result.Pipes ?? new List<Pipe>());
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting detected pipes for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while retrieving pipes", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get all cropped module images for verification
+    /// </summary>
+    [HttpGet("{analysisId}/modules/crops")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetModuleCrops(string analysisId)
+    {
+        try
+        {
+            // Get validated symbols (modules)
+            var symbols = await _sessionService.GetDetectedSymbolsAsync(analysisId);
+            var validatedModules = symbols.Where(s => s.IsModule == true).ToList();
+
+            if (validatedModules.Count == 0)
+            {
+                return Ok(new { modules = new List<object>() });
+            }
+
+            var moduleCrops = new List<object>();
+            
+            foreach (var symbol in validatedModules)
+            {
+                var imageKey = $"module_{symbol.Id}";
+                var croppedImage = await _sessionService.GetImageAsync(analysisId, imageKey);
+                
+                if (croppedImage != null)
+                {
+                    // Convert to base64 for JSON response
+                    var base64Image = Convert.ToBase64String(croppedImage);
+                    var dataUrl = $"data:image/png;base64,{base64Image}";
+                    
+                    moduleCrops.Add(new
+                    {
+                        symbolId = symbol.Id,
+                        moduleLabel = symbol.AssociatedModuleLabel ?? $"Module-{moduleCrops.Count + 1}",
+                        confidence = symbol.Confidence,
+                        boundingBox = symbol.BoundingBox,
+                        croppedImage = dataUrl
+                    });
+                }
+                else
+                {
+                    _logger.LogWarning("Cropped image not found for module {SymbolId} with key {ImageKey}", symbol.Id, imageKey);
+                }
+            }
+
+            return Ok(new { modules = moduleCrops });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting module crops for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while retrieving module crops", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get a specific cropped module image
+    /// </summary>
+    [HttpGet("{analysisId}/modules/{symbolId}/crop")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetModuleCrop(string analysisId, string symbolId)
+    {
+        try
+        {
+            var imageKey = $"module_{symbolId}";
+            var croppedImage = await _sessionService.GetImageAsync(analysisId, imageKey);
+            
+            if (croppedImage == null)
+            {
+                return NotFound(new { error = $"Cropped module image for symbol {symbolId} not found" });
+            }
+
+            return File(croppedImage, "image/png");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting module crop for {AnalysisId}, symbol {SymbolId}", analysisId, symbolId);
+            return StatusCode(500, new { error = "An error occurred while retrieving module crop", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Confirm module verification and continue analysis
+    /// </summary>
+    [HttpPost("{analysisId}/modules/verify")]
+    [ProducesResponseType(StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status400BadRequest)]
+    public async Task<IActionResult> VerifyModulesAndContinue(string analysisId)
+    {
+        try
+        {
+            var session = await _sessionService.GetSessionAsync(analysisId);
+            if (session == null)
+            {
+                return NotFound(new { error = $"Analysis session {analysisId} not found" });
+            }
+
+            // Check if we're in the right stage
+            if (session.CurrentStage != ProcessingStage.AwaitingModuleVerification.ToString())
+            {
+                return BadRequest(new { error = $"Cannot verify modules. Current stage is {session.CurrentStage}, expected {ProcessingStage.AwaitingModuleVerification}" });
+            }
+
+            // Update status
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Processing,
+                "Module verification confirmed. Continuing analysis...",
+                ProcessingStage.Analyzing.ToString());
+
+            // Continue processing (trigger next phase)
+            _ = Task.Run(async () =>
+            {
+                try
+                {
+                    await _processor.ContinueAnalysisAfterModuleVerificationAsync(analysisId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error continuing analysis after module verification for {AnalysisId}", analysisId);
+                }
+            });
+
+            return Ok(new { message = "Module verification confirmed. Analysis continuing..." });
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error verifying modules for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while verifying modules", details = ex.Message });
         }
     }
 }

@@ -24,8 +24,18 @@ function DrainagePlanAnalyzer() {
   const [loadingSymbols, setLoadingSymbols] = useState(false)
   const [symbolValidations, setSymbolValidations] = useState({})
   const [validating, setValidating] = useState(false)
+  const [symbolsPage, setSymbolsPage] = useState(1)
+  const symbolsPerPage = 50
   const [hasPlanImage, setHasPlanImage] = useState(false)
   const [hasOCRResults, setHasOCRResults] = useState(false)
+  const [analysisResults, setAnalysisResults] = useState(null)
+  const [loadingResults, setLoadingResults] = useState(false)
+  const [showResults, setShowResults] = useState(false)
+  const [detectedPipes, setDetectedPipes] = useState([])
+  const [loadingPipes, setLoadingPipes] = useState(false)
+  const [moduleCrops, setModuleCrops] = useState([])
+  const [loadingModuleCrops, setLoadingModuleCrops] = useState(false)
+  const [verifyingModules, setVerifyingModules] = useState(false)
   const fileInputRef = useRef(null)
 
   // Poll for status updates and check for available data
@@ -140,6 +150,9 @@ function DrainagePlanAnalyzer() {
     setShowOCRModal(false)
     setImageModalContent(null)
     setOcrData(null)
+    setDetectedSymbols([])
+    setSymbolValidations({})
+    setModuleCrops([])
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -235,19 +248,36 @@ function DrainagePlanAnalyzer() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, analysisId])
 
+  // Fetch module crops when status is AwaitingModuleVerification
+  useEffect(() => {
+    if (status && analysisId) {
+      const currentStage = String(status.currentStage || '').toLowerCase()
+      if (currentStage.includes('awaitingmoduleverification') || currentStage.includes('awaiting_module_verification')) {
+        if (moduleCrops.length === 0) {
+          handleLoadModuleCrops()
+        }
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, analysisId])
+
   const handleLoadSymbols = async () => {
     if (!analysisId || loadingSymbols) return
     
     setLoadingSymbols(true)
     try {
       const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/symbols`)
-      setDetectedSymbols(response.data || [])
+      // Ensure response.data is treated as an array
+      const symbols = Array.isArray(response.data) ? response.data : (response.data || [])
+      setDetectedSymbols(symbols)
       
       // Initialize validations (null = not validated yet)
       const initialValidations = {}
-      response.data?.forEach(symbol => {
-        initialValidations[symbol.id] = symbol.isModule ?? null
-      })
+      if (Array.isArray(symbols)) {
+        symbols.forEach(symbol => {
+          initialValidations[symbol.id] = symbol.isModule ?? null
+        })
+      }
       setSymbolValidations(initialValidations)
     } catch (err) {
       console.error('Error loading symbols:', err)
@@ -277,9 +307,15 @@ function DrainagePlanAnalyzer() {
         isModule
       }))
 
-    if (validations.length === 0) {
-      alert('Please validate at least one symbol')
+    // Allow proceeding even with 0 validations (for cases where no symbols were detected)
+    if (validations.length === 0 && detectedSymbols.length > 0) {
+      alert('Please validate at least one symbol, or mark symbols as "Not a module" if they are not modules.')
       return
+    }
+    
+    // If no symbols detected at all, send empty validation array to proceed
+    if (validations.length === 0 && detectedSymbols.length === 0) {
+      // This is fine - we'll proceed with text-only analysis
     }
 
     setValidating(true)
@@ -297,6 +333,80 @@ function DrainagePlanAnalyzer() {
       alert(`Error submitting validation: ${err.response?.data?.error || err.message}`)
     } finally {
       setValidating(false)
+    }
+  }
+
+  const handleViewResults = async () => {
+    if (!analysisId || loadingResults) return
+    
+    setLoadingResults(true)
+    try {
+      const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/results`)
+      setAnalysisResults(response.data)
+      setShowResults(true)
+    } catch (err) {
+      if (err.response?.status === 404) {
+        alert('Analysis results not yet available. Please wait for analysis to complete.')
+      } else {
+        alert(`Error loading results: ${err.response?.data?.error || err.message}`)
+      }
+    } finally {
+      setLoadingResults(false)
+    }
+  }
+
+  const handleViewPipes = async () => {
+    if (!analysisId || loadingPipes) return
+    
+    setLoadingPipes(true)
+    try {
+      const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/pipes`)
+      setDetectedPipes(response.data || [])
+      setShowResults(true)
+    } catch (err) {
+      if (err.response?.status === 404) {
+        alert('Pipes not yet available. Please wait for analysis to complete.')
+      } else {
+        alert(`Error loading pipes: ${err.response?.data?.error || err.message}`)
+      }
+    } finally {
+      setLoadingPipes(false)
+    }
+  }
+
+  const handleLoadModuleCrops = async () => {
+    if (!analysisId || loadingModuleCrops) return
+    
+    setLoadingModuleCrops(true)
+    try {
+      const response = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/modules/crops`)
+      setModuleCrops(response.data.modules || [])
+    } catch (err) {
+      console.error('Error loading module crops:', err)
+      if (err.response?.status !== 404) {
+        alert(`Error loading module crops: ${err.response?.data?.error || err.message}`)
+      }
+    } finally {
+      setLoadingModuleCrops(false)
+    }
+  }
+
+  const handleVerifyModulesAndContinue = async () => {
+    if (!analysisId || verifyingModules) return
+
+    setVerifyingModules(true)
+    try {
+      await axios.post(`${API_BASE_URL}/drainage/${analysisId}/modules/verify`)
+      
+      // Clear module crops and reload status
+      setModuleCrops([])
+      
+      // Status will be updated by polling
+      alert('Module verification confirmed. Analysis is continuing...')
+    } catch (err) {
+      alert(`Error verifying modules: ${err.response?.data?.error || err.message}`)
+    } finally {
+      setVerifyingModules(false)
     }
   }
 
@@ -484,14 +594,68 @@ function DrainagePlanAnalyzer() {
                   {loadingSymbols ? (
                     <p>Loading symbols...</p>
                   ) : detectedSymbols.length === 0 ? (
-                    <p>No symbols detected yet. Please wait...</p>
+                    <div className="no-symbols-message">
+                      <p>No symbols were detected in the plan page image.</p>
+                      <p>This could mean:</p>
+                      <ul>
+                        <li>The plan doesn't contain the expected symbol patterns (double rectangles, circles with grids, ovals)</li>
+                        <li>The image quality may need improvement</li>
+                        <li>Symbols may be in a format not yet supported</li>
+                      </ul>
+                      <p>You can still proceed with text-based analysis by clicking the button below.</p>
+                      <button
+                        onClick={handleSubmitValidation}
+                        className="btn btn-secondary"
+                      >
+                        Proceed Without Symbols (Text Analysis Only)
+                      </button>
+                    </div>
                   ) : (
                     <>
+                      {detectedSymbols.length > 100 && (
+                        <div className="symbols-warning" style={{ 
+                          padding: '12px', 
+                          backgroundColor: '#fff3cd', 
+                          border: '1px solid #ffc107', 
+                          borderRadius: '4px', 
+                          marginBottom: '16px' 
+                        }}>
+                          <strong>⚠️ Warning:</strong> {detectedSymbols.length.toLocaleString()} symbols detected. 
+                          This is likely due to false positives. Only the first {symbolsPerPage} symbols are shown below. 
+                          Consider improving symbol detection filters or proceed with text-based analysis.
+                        </div>
+                      )}
                       <p className="validation-instruction">
                         Please mark which symbols are modules by checking/unchecking the boxes below.
+                        {detectedSymbols.length > symbolsPerPage && (
+                          <span> Showing page {symbolsPage} of {Math.ceil(detectedSymbols.length / symbolsPerPage)} ({detectedSymbols.length.toLocaleString()} total symbols)</span>
+                        )}
                       </p>
+                      {detectedSymbols.length > symbolsPerPage && (
+                        <div style={{ marginBottom: '16px', display: 'flex', gap: '8px', alignItems: 'center' }}>
+                          <button
+                            onClick={() => setSymbolsPage(p => Math.max(1, p - 1))}
+                            disabled={symbolsPage === 1}
+                            className="btn btn-secondary"
+                            style={{ padding: '6px 12px' }}
+                          >
+                            Previous
+                          </button>
+                          <span>Page {symbolsPage} of {Math.ceil(detectedSymbols.length / symbolsPerPage)}</span>
+                          <button
+                            onClick={() => setSymbolsPage(p => Math.min(Math.ceil(detectedSymbols.length / symbolsPerPage), p + 1))}
+                            disabled={symbolsPage >= Math.ceil(detectedSymbols.length / symbolsPerPage)}
+                            className="btn btn-secondary"
+                            style={{ padding: '6px 12px' }}
+                          >
+                            Next
+                          </button>
+                        </div>
+                      )}
                       <div className="symbols-grid">
-                        {detectedSymbols.map((symbol) => (
+                        {detectedSymbols
+                          .slice((symbolsPage - 1) * symbolsPerPage, symbolsPage * symbolsPerPage)
+                          .map((symbol) => (
                           <div key={symbol.id} className="symbol-card">
                             {symbol.croppedImage ? (
                               <img 
@@ -543,15 +707,79 @@ function DrainagePlanAnalyzer() {
                 </div>
               )}
 
-              {status.status === 'completed' && (
-                <div className="results-link">
-                  <a href={`#results-${analysisId}`} onClick={(e) => {
-                    e.preventDefault()
-                    // TODO: Show results when implemented
-                    alert('Results view coming soon! Check the browser console for raw results.')
-                  }}>
-                    View Results →
-                  </a>
+              {/* Module Verification Section */}
+              {status && (() => {
+                const currentStage = String(status.currentStage || '').toLowerCase()
+                return currentStage.includes('awaitingmoduleverification') || currentStage.includes('awaiting_module_verification')
+              })() && (
+                <div className="module-verification-section">
+                  <h4>Verify Cropped Modules</h4>
+                  {loadingModuleCrops ? (
+                    <p>Loading module crops...</p>
+                  ) : moduleCrops.length === 0 ? (
+                    <div className="no-modules-message">
+                      <p>No module crops available yet. Please wait...</p>
+                    </div>
+                  ) : (
+                    <>
+                      <p className="verification-instruction">
+                        Please review the cropped module images below. Verify that all modules are correctly identified before continuing with the analysis.
+                      </p>
+                      <div className="modules-crops-grid">
+                        {moduleCrops.map((module, idx) => (
+                          <div key={module.symbolId || idx} className="module-crop-card">
+                            <img 
+                              src={module.croppedImage}
+                              alt={`Module ${module.moduleLabel || idx + 1}`}
+                              className="module-crop-image"
+                            />
+                            <div className="module-crop-info">
+                              <div className="module-crop-label">{module.moduleLabel || `Module ${idx + 1}`}</div>
+                              <div className="module-crop-confidence">
+                                Confidence: {(module.confidence * 100).toFixed(0)}%
+                              </div>
+                              {module.boundingBox && (
+                                <div className="module-crop-bbox">
+                                  Position: ({module.boundingBox.x?.toFixed(0) || 0}, {module.boundingBox.y?.toFixed(0) || 0})
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                      <div className="verification-actions">
+                        <button
+                          onClick={handleVerifyModulesAndContinue}
+                          disabled={verifyingModules || moduleCrops.length === 0}
+                          className="btn btn-primary"
+                        >
+                          {verifyingModules ? 'Verifying...' : `✓ Verify and Continue (${moduleCrops.length} module${moduleCrops.length !== 1 ? 's' : ''})`}
+                        </button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+
+              {status && (() => {
+                const statusStr = String(status.status || '').toLowerCase()
+                return statusStr === 'completed' || statusStr === '2'
+              })() && (
+                <div className="results-actions">
+                  <button
+                    onClick={handleViewResults}
+                    disabled={loadingResults || !analysisId}
+                    className="btn btn-primary"
+                  >
+                    {loadingResults ? 'Loading...' : '📊 View Analysis Results'}
+                  </button>
+                  <button
+                    onClick={handleViewPipes}
+                    disabled={loadingPipes || !analysisId}
+                    className="btn btn-secondary"
+                  >
+                    {loadingPipes ? 'Loading...' : '🔧 View Detected Pipes'}
+                  </button>
                 </div>
               )}
             </div>
@@ -635,6 +863,196 @@ function DrainagePlanAnalyzer() {
                     <pre className="ocr-json">{JSON.stringify(ocrData, null, 2)}</pre>
                   </details>
                 </div>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* Results Modal */}
+        {showResults && (analysisResults || detectedPipes.length > 0) && (
+          <div className="modal-overlay" onClick={() => setShowResults(false)}>
+            <div className="modal-content results-modal" onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3>Analysis Results</h3>
+                <button className="modal-close" onClick={() => setShowResults(false)}>×</button>
+              </div>
+              <div className="modal-body">
+                {/* Analysis Results Summary */}
+                {analysisResults && (
+                  <div className="results-summary">
+                    <h4>Summary</h4>
+                    <div className="results-stats">
+                      <div className="stat-item">
+                        <span className="stat-label">Modules Found:</span>
+                        <span className="stat-value">{analysisResults.modules?.length || 0}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Pipes Found:</span>
+                        <span className="stat-value">{analysisResults.pipes?.length || 0}</span>
+                      </div>
+                      <div className="stat-item">
+                        <span className="stat-label">Overall Confidence:</span>
+                        <span className="stat-value">
+                          {analysisResults.confidence?.average 
+                            ? `${(analysisResults.confidence.average * 100).toFixed(1)}%`
+                            : 'N/A'}
+                        </span>
+                      </div>
+                      {analysisResults.scale && (
+                        <div className="stat-item">
+                          <span className="stat-label">Scale:</span>
+                          <span className="stat-value">{analysisResults.scale.text || 'Not found'}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Pipes Section */}
+                {(detectedPipes.length > 0 || (analysisResults?.pipes?.length > 0)) && (
+                  <div className="pipes-section">
+                    <h4>🔧 Detected Pipes ({detectedPipes.length > 0 ? detectedPipes.length : analysisResults?.pipes?.length || 0})</h4>
+                    <p className="section-description">
+                      Pipes are detected by finding collinear "ST" labels from OCR. Each pipe represents a line segment connecting multiple ST labels.
+                    </p>
+                    {((detectedPipes.length > 0 ? detectedPipes : analysisResults?.pipes || []).length === 0) ? (
+                      <div className="no-data-message">
+                        No pipes detected. This could mean:
+                        <ul>
+                          <li>No "ST" labels were found in the OCR results</li>
+                          <li>ST labels were found but not grouped into collinear patterns</li>
+                          <li>Pipes need at least 2 ST labels to be detected</li>
+                        </ul>
+                      </div>
+                    ) : (
+                      <div className="pipes-list">
+                        {(detectedPipes.length > 0 ? detectedPipes : analysisResults?.pipes || []).map((pipe, idx) => (
+                          <div key={pipe.id || idx} className="pipe-card">
+                            <div className="pipe-header">
+                              <span className="pipe-id">🔧 Pipe {idx + 1} (ID: {pipe.id?.substring(0, 8) || 'N/A'})</span>
+                              <span className="pipe-confidence">
+                                Confidence: {(pipe.confidence * 100).toFixed(1)}%
+                              </span>
+                            </div>
+                            <div className="pipe-details">
+                              <div className="pipe-info-highlight">
+                                <strong>📍 ST Labels Found:</strong> <span className="highlight-value">{pipe.stLabels?.length || 0}</span>
+                                {pipe.stLabels && pipe.stLabels.length > 0 && (
+                                  <span className="info-note"> (These ST labels form the pipe line)</span>
+                                )}
+                              </div>
+                              {pipe.line && pipe.line.startPoint && pipe.line.endPoint ? (
+                                <div className="pipe-line-info">
+                                  <div className="pipe-info-item">
+                                    <strong>📏 Line Segment:</strong>
+                                  </div>
+                                  <div className="pipe-info-item indent">
+                                    <strong>Start:</strong> ({pipe.line.startPoint.x?.toFixed(1) || 0}, {pipe.line.startPoint.y?.toFixed(1) || 0}) px
+                                  </div>
+                                  <div className="pipe-info-item indent">
+                                    <strong>End:</strong> ({pipe.line.endPoint.x?.toFixed(1) || 0}, {pipe.line.endPoint.y?.toFixed(1) || 0}) px
+                                  </div>
+                                  <div className="pipe-info-item indent">
+                                    <strong>Length:</strong> <span className="highlight-value">
+                                      {Math.sqrt(
+                                        Math.pow(pipe.line.endPoint.x - pipe.line.startPoint.x, 2) +
+                                        Math.pow(pipe.line.endPoint.y - pipe.line.startPoint.y, 2)
+                                      ).toFixed(1)} px
+                                    </span>
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="pipe-info-item warning">
+                                  ⚠️ No line segment data available
+                                </div>
+                              )}
+                              {pipe.specification ? (
+                                <div className="pipe-info-item highlight">
+                                  <strong>📋 Specification:</strong> {pipe.specification.text || `${pipe.specification.diameter}" ${pipe.specification.material || ''}`}
+                                </div>
+                              ) : (
+                                <div className="pipe-info-item muted">
+                                  <strong>📋 Specification:</strong> <span className="muted-text">Not detected</span>
+                                </div>
+                              )}
+                              {pipe.flowDirection ? (
+                                <div className="pipe-info-item">
+                                  <strong>➡️ Flow Direction:</strong> {pipe.flowDirection.direction || 'Unknown'}
+                                </div>
+                              ) : (
+                                <div className="pipe-info-item muted">
+                                  <strong>➡️ Flow Direction:</strong> <span className="muted-text">Not detected</span>
+                                </div>
+                              )}
+                              {pipe.connections && pipe.connections.length > 0 ? (
+                                <div className="pipe-info-item highlight">
+                                  <strong>🔗 Connections:</strong> {pipe.connections.length} module(s)
+                                </div>
+                              ) : (
+                                <div className="pipe-info-item muted">
+                                  <strong>🔗 Connections:</strong> <span className="muted-text">Not yet associated with modules</span>
+                                </div>
+                              )}
+                            </div>
+                            {pipe.stLabels && pipe.stLabels.length > 0 && (
+                              <details className="pipe-st-labels">
+                                <summary>📌 View {pipe.stLabels.length} ST Label{pipe.stLabels.length !== 1 ? 's' : ''} (Click to expand)</summary>
+                                <div className="st-labels-list">
+                                  {pipe.stLabels.map((stLabel, stIdx) => (
+                                    <div key={stIdx} className="st-label-item">
+                                      <span className="st-label-number">ST #{stIdx + 1}:</span>
+                                      <span className="st-label-position">📍 ({stLabel.position?.x?.toFixed(1) || 0}, {stLabel.position?.y?.toFixed(1) || 0})</span>
+                                      <span className="st-label-confidence">{(stLabel.confidence * 100).toFixed(1)}%</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </details>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Modules Section */}
+                {analysisResults?.modules && analysisResults.modules.length > 0 && (
+                  <div className="modules-section">
+                    <h4>Detected Modules ({analysisResults.modules.length})</h4>
+                    <div className="modules-list">
+                      {analysisResults.modules.map((module, idx) => (
+                        <div key={idx} className="module-card">
+                          <div className="module-header">
+                            <span className="module-label">{module.label || `Module ${idx + 1}`}</span>
+                            {module.metadata?.confidence && (
+                              <span className="module-confidence">
+                                Confidence: {(module.metadata.confidence * 100).toFixed(1)}%
+                              </span>
+                            )}
+                          </div>
+                          {module.location && (
+                            <div className="module-info-item">
+                              <strong>Location:</strong> ({module.location.x?.toFixed(1) || 0}, {module.location.y?.toFixed(1) || 0})
+                            </div>
+                          )}
+                          {module.connections && module.connections.length > 0 && (
+                            <div className="module-info-item">
+                              <strong>Connections:</strong> {module.connections.length} pipe(s)
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Full JSON (Collapsible) */}
+                <details className="results-json-details">
+                  <summary>View Full JSON Data</summary>
+                  <pre className="results-json">
+                    {JSON.stringify(analysisResults || { pipes: detectedPipes }, null, 2)}
+                  </pre>
+                </details>
               </div>
             </div>
           </div>

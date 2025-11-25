@@ -27,25 +27,36 @@ public class PdfProcessingService : IPdfProcessingService
         _logger = logger;
         _httpClient = httpClientFactory.CreateClient();
         _httpClient.BaseAddress = null;
-        _httpClient.Timeout = TimeSpan.FromSeconds(120); // Longer timeout for PDF conversion
+        // Use a much longer timeout for PDF conversion (10 minutes) since large PDFs can take time
+        // This includes time to upload the PDF and process it on the Python service
+        _httpClient.Timeout = TimeSpan.FromMinutes(10);
         _imageProcessingConfig = imageProcessingConfig.Value;
     }
 
     public async Task<byte[]> ConvertPageToImageAsync(byte[] pdfBytes, int pageNumber, int dpi = 300)
     {
+        var startTime = DateTime.UtcNow;
         try
         {
-            _logger.LogInformation("Converting PDF page {PageNumber} to image via Python service (DPI: {Dpi})", pageNumber, dpi);
+            var pdfSizeMB = pdfBytes.Length / (1024.0 * 1024.0);
+            _logger.LogInformation("Converting PDF page {PageNumber} to image via Python service (DPI: {Dpi}, PDF size: {SizeMB:F2} MB, {Size} bytes)", 
+                pageNumber, dpi, pdfSizeMB, pdfBytes.Length);
             
             var serviceUrl = _imageProcessingConfig.ServiceUrl.TrimEnd('/');
             var url = $"{serviceUrl}/convert-pdf-page?page_number={pageNumber}&dpi={dpi}";
+            
+            _logger.LogInformation("Uploading PDF to Python service at {Url} (this may take a while for large PDFs)...", url);
             
             using var content = new MultipartFormDataContent();
             var pdfContent = new ByteArrayContent(pdfBytes);
             pdfContent.Headers.ContentType = new MediaTypeHeaderValue("application/pdf");
             content.Add(pdfContent, "file", "document.pdf");
             
+            _logger.LogInformation("Sending PDF conversion request (timeout: {TimeoutMinutes} minutes)", _httpClient.Timeout.TotalMinutes);
             var response = await _httpClient.PostAsync(new Uri(url), content);
+            
+            var uploadTime = DateTime.UtcNow - startTime;
+            _logger.LogInformation("Received response from Python service after {ElapsedSeconds:F2} seconds", uploadTime.TotalSeconds);
             
             if (!response.IsSuccessStatusCode)
             {
@@ -70,17 +81,36 @@ public class PdfProcessingService : IPdfProcessingService
                 if (!string.IsNullOrEmpty(base64String))
                 {
                     var imageBytes = Convert.FromBase64String(base64String);
-                    _logger.LogInformation("Successfully converted PDF page {PageNumber} to image ({Size} bytes)", 
-                        pageNumber, imageBytes.Length);
+                    var totalTime = DateTime.UtcNow - startTime;
+                    var imageSizeMB = imageBytes.Length / (1024.0 * 1024.0);
+                    _logger.LogInformation("Successfully converted PDF page {PageNumber} to image ({SizeMB:F2} MB, {Size} bytes) in {TotalSeconds:F2} seconds", 
+                        pageNumber, imageSizeMB, imageBytes.Length, totalTime.TotalSeconds);
                     return imageBytes;
                 }
             }
             
             throw new InvalidOperationException("Failed to get image from Python service response");
         }
+        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+        {
+            var elapsed = DateTime.UtcNow - startTime;
+            var pdfSizeMB = pdfBytes.Length / (1024.0 * 1024.0);
+            _logger.LogError(ex, "PDF conversion timed out after {ElapsedSeconds:F2} seconds (timeout: {TimeoutMinutes} minutes). " +
+                "PDF size: {SizeMB:F2} MB. The PDF may be too large or the Python service is slow. " +
+                "Consider: 1) Reducing DPI, 2) Checking if Python service is running, 3) Processing smaller PDFs", 
+                elapsed.TotalSeconds, _httpClient.Timeout.TotalMinutes, pdfSizeMB);
+            throw new NotImplementedException($"PDF to image conversion timed out after {elapsed.TotalSeconds:F2} seconds", ex);
+        }
+        catch (TaskCanceledException ex)
+        {
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "PDF conversion request was canceled after {ElapsedSeconds:F2} seconds", elapsed.TotalSeconds);
+            throw new NotImplementedException("PDF to image conversion was canceled", ex);
+        }
         catch (HttpRequestException ex)
         {
-            _logger.LogWarning(ex, "Failed to convert PDF page via Python service, falling back to NotImplementedException");
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogWarning(ex, "Failed to convert PDF page via Python service after {ElapsedSeconds:F2} seconds, falling back to NotImplementedException", elapsed.TotalSeconds);
             throw new NotImplementedException("PDF to image conversion service unavailable", ex);
         }
         catch (NotImplementedException)
@@ -89,7 +119,8 @@ public class PdfProcessingService : IPdfProcessingService
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error converting PDF page to image");
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "Error converting PDF page to image after {ElapsedSeconds:F2} seconds: {Message}", elapsed.TotalSeconds, ex.Message);
             throw new NotImplementedException("PDF to image conversion failed", ex);
         }
     }

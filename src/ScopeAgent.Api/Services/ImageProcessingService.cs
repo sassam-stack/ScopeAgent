@@ -247,9 +247,24 @@ public class ImageProcessingService : IImageProcessingService
 
     public async Task<List<DetectedSymbol>> DetectSymbolsAsync(byte[] imageBytes)
     {
+        var startTime = DateTime.UtcNow;
         try
         {
-            _logger.LogInformation("Detecting symbols in image");
+            _logger.LogInformation("Detecting symbols in image ({Size} bytes, ~{SizeMB:F2} MB) via {ServiceUrl}/detect-symbols", 
+                imageBytes.Length, imageBytes.Length / (1024.0 * 1024.0), _config.ServiceUrl);
+            
+            // Quick health check - verify service is reachable (with short timeout)
+            try
+            {
+                using var healthCheckCts = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+                var healthCheck = await _httpClient.GetAsync(new Uri($"{_config.ServiceUrl}/health"), healthCheckCts.Token);
+                _logger.LogDebug("Image processing service is reachable (health check returned {StatusCode})", healthCheck.StatusCode);
+            }
+            catch (Exception healthEx)
+            {
+                _logger.LogWarning(healthEx, "Health check failed for image processing service at {ServiceUrl}. " +
+                    "Service may be unavailable, but continuing with symbol detection request anyway.", _config.ServiceUrl);
+            }
             
             var url = $"{_config.ServiceUrl}/detect-symbols";
             using var content = new MultipartFormDataContent();
@@ -257,15 +272,40 @@ public class ImageProcessingService : IImageProcessingService
             imageContent.Headers.ContentType = new MediaTypeHeaderValue("image/png");
             content.Add(imageContent, "file", "image.png");
 
-            var response = await _httpClient.PostAsync(new Uri(url), content);
-            response.EnsureSuccessStatusCode();
+            // Use a longer timeout for symbol detection (3x the default, or minimum 180 seconds)
+            var symbolDetectionTimeout = TimeSpan.FromSeconds(Math.Max(_config.TimeoutSeconds * 3, 180));
+            _logger.LogInformation("Using timeout of {TimeoutSeconds} seconds for symbol detection (default timeout: {DefaultTimeoutSeconds}s)", 
+                symbolDetectionTimeout.TotalSeconds, _config.TimeoutSeconds);
+            
+            // Create a separate HttpClient with extended timeout for symbol detection
+            // This is necessary because symbol detection can take much longer than other operations
+            using var symbolDetectionClient = new HttpClient
+            {
+                Timeout = symbolDetectionTimeout
+            };
+            
+            _logger.LogDebug("Sending POST request to {Url}", url);
+            var response = await symbolDetectionClient.PostAsync(new Uri(url), content);
+            
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorContent = await response.Content.ReadAsStringAsync();
+                _logger.LogError("Image processing service returned error: {StatusCode} - {Error}", 
+                    response.StatusCode, errorContent);
+                throw new HttpRequestException($"Image processing service returned {response.StatusCode}: {errorContent}");
+            }
 
             var responseContent = await response.Content.ReadAsStringAsync();
+            _logger.LogDebug("Received response from image processing service: {Length} characters", responseContent.Length);
+            
             var result = JsonSerializer.Deserialize<JsonElement>(responseContent);
 
             var symbols = new List<DetectedSymbol>();
             if (result.TryGetProperty("symbols", out var symbolsArray))
             {
+                _logger.LogDebug("Found 'symbols' array in response with {Count} items", 
+                    symbolsArray.GetArrayLength());
+                
                 foreach (var symbol in symbolsArray.EnumerateArray())
                 {
                     var detectedSymbol = new DetectedSymbol();
@@ -324,13 +364,44 @@ public class ImageProcessingService : IImageProcessingService
                     symbols.Add(detectedSymbol);
                 }
             }
+            else
+            {
+                _logger.LogWarning("Response from image processing service does not contain 'symbols' property. Full response: {Response}", 
+                    responseContent);
+            }
 
-            _logger.LogInformation("Detected {Count} symbols", symbols.Count);
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogInformation("Successfully parsed {Count} symbols from image processing service response (took {ElapsedSeconds:F2} seconds)", 
+                symbols.Count, elapsed.TotalSeconds);
             return symbols;
+        }
+        catch (HttpRequestException ex)
+        {
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "HTTP error detecting symbols after {ElapsedSeconds:F2} seconds: {Message}. " +
+                "Check if Python service is running at {ServiceUrl}", elapsed.TotalSeconds, ex.Message, _config.ServiceUrl);
+            throw;
+        }
+        catch (TaskCanceledException ex) when (ex.InnerException is TimeoutException)
+        {
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "Timeout detecting symbols after {ElapsedSeconds:F2} seconds (configured timeout: {TimeoutSeconds}s). " +
+                "The Python service at {ServiceUrl} may be slow, unavailable, or the image is too large ({SizeMB:F2} MB). " +
+                "Consider: 1) Checking if the Python service is running, 2) Reducing image size/DPI, 3) Increasing TimeoutSeconds in appsettings.json", 
+                elapsed.TotalSeconds, _config.TimeoutSeconds, _config.ServiceUrl, imageBytes.Length / (1024.0 * 1024.0));
+            throw;
+        }
+        catch (TaskCanceledException ex)
+        {
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "Request canceled after {ElapsedSeconds:F2} seconds (service may be unavailable or slow)", elapsed.TotalSeconds);
+            throw;
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error detecting symbols");
+            var elapsed = DateTime.UtcNow - startTime;
+            _logger.LogError(ex, "Unexpected error detecting symbols after {ElapsedSeconds:F2} seconds: {Message}. Stack trace: {StackTrace}", 
+                elapsed.TotalSeconds, ex.Message, ex.StackTrace);
             throw;
         }
     }

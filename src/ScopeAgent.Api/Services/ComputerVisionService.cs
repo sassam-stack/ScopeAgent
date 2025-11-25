@@ -2,6 +2,9 @@ using System.Net.Http.Headers;
 using System.Text.Json;
 using Microsoft.Extensions.Options;
 using ScopeAgent.Api.Models.DrainageAnalysis;
+using SixLabors.ImageSharp;
+using SixLabors.ImageSharp.Processing;
+using SixLabors.ImageSharp.Formats.Png;
 
 namespace ScopeAgent.Api.Services;
 
@@ -239,13 +242,39 @@ public class ComputerVisionService : IComputerVisionService
 
         try
         {
+            // Azure Computer Vision limits: max 10000x10000 pixels
+            const int maxDimension = 10000;
+            
+            // Check and resize image if needed before sending to OCR
+            byte[] imageForOcr = imageBytes;
+            try
+            {
+                using var image = Image.Load(imageBytes);
+                if (image.Width > maxDimension || image.Height > maxDimension)
+                {
+                    _logger.LogInformation("Image dimensions {Width}x{Height} exceed Azure CV limit of {MaxDimension}x{MaxDimension}. Resizing for OCR...", 
+                        image.Width, image.Height, maxDimension, maxDimension);
+                    imageForOcr = await ResizeImageForOcrAsync(imageBytes, maxDimension);
+                    _logger.LogInformation("Image resized for OCR to {Size} bytes", imageForOcr.Length);
+                }
+                else
+                {
+                    _logger.LogDebug("Image dimensions {Width}x{Height} are within Azure CV limits", image.Width, image.Height);
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not check/resize image dimensions, proceeding with original image for OCR");
+                // Continue with original image if resize fails
+            }
+            
             _logger.LogInformation("Reading text from image with Azure Computer Vision OCR");
             
             var endpoint = _config.Endpoint.TrimEnd('/');
             // Use the Read API endpoint for OCR
             var url = $"{endpoint}/vision/v3.2/read/analyze";
             
-            using var content = new ByteArrayContent(imageBytes);
+            using var content = new ByteArrayContent(imageForOcr);
             content.Headers.ContentType = new MediaTypeHeaderValue("application/octet-stream");
             
             using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(url))
@@ -600,6 +629,46 @@ public class ComputerVisionService : IComputerVisionService
             _logger.LogError(ex, "Error reading text from PDF with Computer Vision");
             throw;
         }
+    }
+
+    /// <summary>
+    /// Resize image to meet Azure Computer Vision API limits (max 10000x10000 pixels)
+    /// Maintains aspect ratio and preserves PNG format
+    /// </summary>
+    private async Task<byte[]> ResizeImageForOcrAsync(byte[] imageBytes, int maxDimension)
+    {
+        using var image = Image.Load(imageBytes);
+        
+        // Calculate new dimensions while maintaining aspect ratio
+        int newWidth = image.Width;
+        int newHeight = image.Height;
+        
+        if (image.Width > maxDimension || image.Height > maxDimension)
+        {
+            double ratio = Math.Min((double)maxDimension / image.Width, (double)maxDimension / image.Height);
+            newWidth = (int)(image.Width * ratio);
+            newHeight = (int)(image.Height * ratio);
+            
+            _logger.LogInformation("Resizing image from {OriginalWidth}x{OriginalHeight} to {NewWidth}x{NewHeight} (ratio: {Ratio:F3})", 
+                image.Width, image.Height, newWidth, newHeight, ratio);
+        }
+        else
+        {
+            // No resize needed
+            return imageBytes;
+        }
+
+        // Resize the image
+        image.Mutate(x => x.Resize(new ResizeOptions
+        {
+            Size = new Size(newWidth, newHeight),
+            Mode = ResizeMode.Max
+        }));
+
+        // Save as PNG (preserve format for OCR)
+        using var outputStream = new MemoryStream();
+        await image.SaveAsPngAsync(outputStream);
+        return outputStream.ToArray();
     }
 }
 

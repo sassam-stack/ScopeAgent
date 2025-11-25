@@ -15,6 +15,8 @@ FastAPI microservice for computer vision operations using OpenCV.
      - Add the path to the `bin` folder (e.g., `C:\poppler\Library\bin`)
      - Restart your terminal/Python service
    - Or install via chocolatey: `choco install poppler`
+   - Or - Quick Test Without PATH (Temporary)
+      - $env:PATH += ";C:\path\to\poppler\Library\bin"
    - **Verify installation:** Open a new terminal and run `pdftoppm -h` - it should show help text
    
    **Linux (Ubuntu/Debian):**
