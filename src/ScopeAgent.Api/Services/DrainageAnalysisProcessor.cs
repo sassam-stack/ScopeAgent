@@ -14,19 +14,22 @@ public class DrainageAnalysisProcessor
     private readonly IPdfProcessingService _pdfProcessingService;
     private readonly IComputerVisionService _computerVisionService;
     private readonly IImageProcessingService _imageProcessingService;
+    private readonly IOuterportService _outerportService;
 
     public DrainageAnalysisProcessor(
         ILogger<DrainageAnalysisProcessor> logger,
         IAnalysisSessionService sessionService,
         IPdfProcessingService pdfProcessingService,
         IComputerVisionService computerVisionService,
-        IImageProcessingService imageProcessingService)
+        IImageProcessingService imageProcessingService,
+        IOuterportService outerportService)
     {
         _logger = logger;
         _sessionService = sessionService;
         _pdfProcessingService = pdfProcessingService;
         _computerVisionService = computerVisionService;
         _imageProcessingService = imageProcessingService;
+        _outerportService = outerportService;
     }
 
     public async Task ProcessAnalysisAsync(string analysisId)
@@ -39,6 +42,14 @@ public class DrainageAnalysisProcessor
             if (session == null)
             {
                 _logger.LogWarning("Session {AnalysisId} not found", analysisId);
+                return;
+            }
+
+            // Check if Outerport service should be used
+            if (session.Request.UseOuterport)
+            {
+                _logger.LogInformation("Using Outerport service for analysis {AnalysisId}", analysisId);
+                await ProcessOuterportAnalysisAsync(analysisId, session);
                 return;
             }
 
@@ -2247,6 +2258,127 @@ public class DrainageAnalysisProcessor
                 AnalysisStatus.Error,
                 $"Error during processing: {ex.Message}",
                 ProcessingStage.Error.ToString());
+        }
+    }
+
+    /// <summary>
+    /// Continue analysis after user has verified modules
+    /// </summary>
+    public async Task ContinueAnalysisAfterModuleVerificationAsync(string analysisId)
+    {
+        try
+        {
+            _logger.LogInformation("Continuing analysis after module verification for {AnalysisId}", analysisId);
+
+            var session = await _sessionService.GetSessionAsync(analysisId);
+            if (session == null)
+            {
+                _logger.LogWarning("Session {AnalysisId} not found", analysisId);
+                return;
+            }
+
+            // Continue with the same flow as after validation
+            // Module verification is essentially a confirmation step, so we can proceed with analysis
+            await ContinueAnalysisAfterValidationAsync(analysisId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error continuing analysis after module verification {AnalysisId}", analysisId);
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Error,
+                $"Error during processing: {ex.Message}",
+                ProcessingStage.Error.ToString());
+        }
+    }
+
+    private async Task ProcessOuterportAnalysisAsync(string analysisId, AnalysisSession session)
+    {
+        try
+        {
+            _logger.LogInformation("Starting Outerport analysis processing for {AnalysisId}", analysisId);
+
+            byte[]? pdfBytes = await _sessionService.GetImageAsync(analysisId, "pdf");
+            if (pdfBytes == null)
+            {
+                throw new InvalidOperationException("PDF file not found in session");
+            }
+
+            // Step 1: Convert PDF page to image
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Processing,
+                "Converting PDF page to image...",
+                ProcessingStage.OcrExtracting.ToString());
+
+            byte[]? planPageImage = await _sessionService.GetImageAsync(analysisId, "planPage");
+            
+            if (planPageImage == null)
+            {
+                try
+                {
+                    var dpi = 200;
+                    _logger.LogInformation("Converting PDF page {PageNumber} to image at {Dpi} DPI for Outerport processing", 
+                        session.Request.PlanPageNumber, dpi);
+                    planPageImage = await _pdfProcessingService.ConvertPageToImageAsync(
+                        pdfBytes, 
+                        session.Request.PlanPageNumber, 
+                        dpi: dpi
+                    );
+                    
+                    _logger.LogInformation("PDF conversion successful! Image size: {Size} bytes", planPageImage.Length);
+                    await _sessionService.StoreImageAsync(analysisId, "planPage", planPageImage);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogError(ex, "Error converting PDF page to image: {Message}", ex.Message);
+                    await _sessionService.UpdateSessionStatusAsync(
+                        analysisId,
+                        AnalysisStatus.Error,
+                        $"Error converting PDF to image: {ex.Message}",
+                        null);
+                    return;
+                }
+            }
+
+            // Step 2: Process with Outerport service
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Processing,
+                "Processing drainage plan with Outerport service...",
+                ProcessingStage.Analyzing.ToString());
+
+            _logger.LogInformation("Calling Outerport service for analysis {AnalysisId}", analysisId);
+            var outerportResult = await _outerportService.ProcessDrainagePlanAsync(planPageImage);
+            
+            if (outerportResult == null)
+            {
+                throw new InvalidOperationException("Outerport service returned null result");
+            }
+
+            _logger.LogInformation("Outerport processing completed. Found {JunctionCount} junctions and {MaterialCount} materials",
+                outerportResult.Junctions.Count, outerportResult.Materials.Count);
+
+            // Store Outerport results
+            await _sessionService.StoreOuterportResultsAsync(analysisId, outerportResult);
+
+            // Mark as completed
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Completed,
+                $"Outerport analysis completed. Found {outerportResult.Junctions.Count} junctions and {outerportResult.Materials.Count} materials.",
+                ProcessingStage.Completed.ToString());
+
+            _logger.LogInformation("Outerport analysis completed for {AnalysisId}", analysisId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error processing Outerport analysis {AnalysisId}", analysisId);
+            await _sessionService.UpdateSessionStatusAsync(
+                analysisId,
+                AnalysisStatus.Error,
+                $"Error during Outerport processing: {ex.Message}",
+                null);
         }
     }
 }

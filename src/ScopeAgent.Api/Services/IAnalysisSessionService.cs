@@ -63,6 +63,16 @@ public interface IAnalysisSessionService
     Task<AnalysisResult?> GetAnalysisResultAsync(string analysisId);
 
     /// <summary>
+    /// Store Outerport results
+    /// </summary>
+    Task StoreOuterportResultsAsync(string analysisId, OuterportResult result);
+
+    /// <summary>
+    /// Get stored Outerport results
+    /// </summary>
+    Task<OuterportResult?> GetOuterportResultsAsync(string analysisId);
+
+    /// <summary>
     /// Clean up old sessions (older than specified hours)
     /// </summary>
     Task CleanupOldSessionsAsync(int hoursOld = 24);

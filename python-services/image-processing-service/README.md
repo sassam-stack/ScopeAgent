@@ -8,15 +8,15 @@ FastAPI microservice for computer vision operations using OpenCV.
    
    **Windows:**
    - Download Poppler for Windows from: https://github.com/oschwartz10612/poppler-windows/releases/
-   - Extract the ZIP file (e.g., to `C:\poppler`)
+   - Extract the ZIP file (e.g., to `C:\Program Files\poppler\Library\bin`)
    - Add the `bin` folder to your system PATH:
      - Open System Properties → Environment Variables
      - Edit the `Path` variable in System variables
-     - Add the path to the `bin` folder (e.g., `C:\poppler\Library\bin`)
+     - Add the path to the `bin` folder (e.g., `C:\Program Files\poppler\Library\bin`)
      - Restart your terminal/Python service
    - Or install via chocolatey: `choco install poppler`
    - Or - Quick Test Without PATH (Temporary)
-      - $env:PATH += ";C:\path\to\poppler\Library\bin"
+      - $env:PATH += ";C:\Program Files\poppler\Library\bin"
    - **Verify installation:** Open a new terminal and run `pdftoppm -h` - it should show help text
    
    **Linux (Ubuntu/Debian):**

@@ -29,5 +29,10 @@ public class UploadRequest
     /// Optional: Pre-defined list of module labels (e.g., ["S-1", "S-2", "S-3"])
     /// </summary>
     public List<string>? ModuleList { get; set; }
+    
+    /// <summary>
+    /// Optional: If true, use Outerport service for module extraction. If false, use Azure VR & symbol validation (default).
+    /// </summary>
+    public bool UseOuterport { get; set; } = false;
 }
 

@@ -16,6 +16,7 @@ public class AnalysisSessionService : IAnalysisSessionService
     private readonly ConcurrentDictionary<string, OCRResult> _ocrResults = new();
     private readonly ConcurrentDictionary<string, List<DetectedSymbol>> _detectedSymbols = new();
     private readonly ConcurrentDictionary<string, AnalysisResult> _analysisResults = new();
+    private readonly ConcurrentDictionary<string, OuterportResult> _outerportResults = new();
 
     public AnalysisSessionService(ILogger<AnalysisSessionService> logger)
     {
@@ -66,6 +67,7 @@ public class AnalysisSessionService : IAnalysisSessionService
                 nameof(ProcessingStage.OcrExtracting) => 30,
                 nameof(ProcessingStage.SymbolDetecting) => 50,
                 nameof(ProcessingStage.AwaitingValidation) => 70,
+                nameof(ProcessingStage.AwaitingModuleVerification) => 75,
                 nameof(ProcessingStage.Analyzing) => 85,
                 nameof(ProcessingStage.Completed) => 100,
                 _ => session.Progress
@@ -154,11 +156,25 @@ public class AnalysisSessionService : IAnalysisSessionService
             _ocrResults.TryRemove(analysisId, out _);
             _detectedSymbols.TryRemove(analysisId, out _);
             _analysisResults.TryRemove(analysisId, out _);
+            _outerportResults.TryRemove(analysisId, out _);
             
             _logger.LogInformation("Cleaned up session {AnalysisId}", analysisId);
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task StoreOuterportResultsAsync(string analysisId, OuterportResult result)
+    {
+        _outerportResults.AddOrUpdate(analysisId, result, (k, v) => result);
+        _logger.LogInformation("Stored Outerport results for session {AnalysisId}", analysisId);
+        return Task.CompletedTask;
+    }
+
+    public Task<OuterportResult?> GetOuterportResultsAsync(string analysisId)
+    {
+        _outerportResults.TryGetValue(analysisId, out var result);
+        return Task.FromResult(result);
     }
 }
 

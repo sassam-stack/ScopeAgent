@@ -21,6 +21,7 @@ public enum ProcessingStage
     OcrExtracting,
     SymbolDetecting,
     AwaitingValidation,
+    AwaitingModuleVerification,
     Analyzing,
     Completed,
     Error

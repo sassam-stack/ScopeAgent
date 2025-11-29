@@ -32,18 +32,23 @@ builder.Services.AddHttpClient<IImageProcessingService, ImageProcessingService>(
 // NOTE: YOLO service is currently disabled - preserved for future use
 // builder.Services.AddHttpClient<IYoloService, YoloService>();
 
+// Register HttpClient for Outerport Service
+builder.Services.AddHttpClient<IOuterportService, OuterportService>();
+
 // Register services
 builder.Services.AddScoped<IComputerVisionService, ComputerVisionService>();
 builder.Services.AddScoped<IPdfProcessingService, PdfProcessingService>();
 builder.Services.AddScoped<IImageProcessingService, ImageProcessingService>();
 builder.Services.AddSingleton<IAnalysisSessionService, AnalysisSessionService>();
 builder.Services.AddScoped<DrainageAnalysisProcessor>();
+builder.Services.AddScoped<IOuterportService, OuterportService>();
 // NOTE: YOLO service is currently disabled - preserved for future use
 // builder.Services.AddScoped<IYoloService, YoloService>();
 
 // Configuration
 builder.Services.Configure<ComputerVisionConfig>(builder.Configuration.GetSection("ComputerVision"));
 builder.Services.Configure<ImageProcessingConfig>(builder.Configuration.GetSection("ImageProcessing"));
+builder.Services.Configure<OuterportConfig>(builder.Configuration.GetSection("Outerport"));
 // NOTE: YOLO config is kept but service is disabled
 builder.Services.Configure<YoloConfig>(builder.Configuration.GetSection("Yolo"));
 

@@ -15,6 +15,7 @@ public class DrainageAnalysisController : ControllerBase
     private readonly IPdfProcessingService _pdfProcessingService;
     private readonly IComputerVisionService _computerVisionService;
     private readonly DrainageAnalysisProcessor _processor;
+    private readonly IOuterportService _outerportService;
     private readonly ILogger<DrainageAnalysisController> _logger;
 
     public DrainageAnalysisController(
@@ -22,12 +23,14 @@ public class DrainageAnalysisController : ControllerBase
         IPdfProcessingService pdfProcessingService,
         IComputerVisionService computerVisionService,
         DrainageAnalysisProcessor processor,
+        IOuterportService outerportService,
         ILogger<DrainageAnalysisController> logger)
     {
         _sessionService = sessionService;
         _pdfProcessingService = pdfProcessingService;
         _computerVisionService = computerVisionService;
         _processor = processor;
+        _outerportService = outerportService;
         _logger = logger;
     }
 
@@ -515,6 +518,38 @@ public class DrainageAnalysisController : ControllerBase
         {
             _logger.LogError(ex, "Error verifying modules for {AnalysisId}", analysisId);
             return StatusCode(500, new { error = "An error occurred while verifying modules", details = ex.Message });
+        }
+    }
+
+    /// <summary>
+    /// Get Outerport results for an analysis session
+    /// </summary>
+    [HttpGet("{analysisId}/outerport-results")]
+    [ProducesResponseType(typeof(OuterportResult), StatusCodes.Status200OK)]
+    [ProducesResponseType(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetOuterportResults(string analysisId)
+    {
+        try
+        {
+            var session = await _sessionService.GetSessionAsync(analysisId);
+            if (session == null)
+            {
+                return NotFound(new { error = $"Analysis session {analysisId} not found" });
+            }
+
+            // Get Outerport results from session
+            var outerportResults = await _sessionService.GetOuterportResultsAsync(analysisId);
+            if (outerportResults == null)
+            {
+                return NotFound(new { error = $"Outerport results for {analysisId} not found" });
+            }
+
+            return Ok(outerportResults);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error getting Outerport results for {AnalysisId}", analysisId);
+            return StatusCode(500, new { error = "An error occurred while retrieving Outerport results", details = ex.Message });
         }
     }
 }

@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import axios from 'axios'
+import OuterportResultsViewer from './OuterportResultsViewer'
 import './DrainagePlanAnalyzer.css'
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || 'http://localhost:5000/api'
@@ -36,6 +37,10 @@ function DrainagePlanAnalyzer() {
   const [moduleCrops, setModuleCrops] = useState([])
   const [loadingModuleCrops, setLoadingModuleCrops] = useState(false)
   const [verifyingModules, setVerifyingModules] = useState(false)
+  const [useOuterport, setUseOuterport] = useState(false)
+  const [outerportResults, setOuterportResults] = useState(null)
+  const [loadingOuterportResults, setLoadingOuterportResults] = useState(false)
+  const [showOuterportModal, setShowOuterportModal] = useState(false)
   const fileInputRef = useRef(null)
 
   // Poll for status updates and check for available data
@@ -109,6 +114,7 @@ function DrainagePlanAnalyzer() {
       const formData = new FormData()
       formData.append('pdfFile', selectedFile)
       formData.append('planPageNumber', planPageNumber.toString())
+      formData.append('useOuterport', useOuterport.toString())
       
       if (contentTablePage) {
         formData.append('contentTablePageNumber', contentTablePage)
@@ -153,6 +159,7 @@ function DrainagePlanAnalyzer() {
     setDetectedSymbols([])
     setSymbolValidations({})
     setModuleCrops([])
+    setUseOuterport(false)
     if (fileInputRef.current) {
       fileInputRef.current.value = ''
     }
@@ -410,6 +417,44 @@ function DrainagePlanAnalyzer() {
     }
   }
 
+  const handleViewOuterportResults = async () => {
+    if (!analysisId || loadingOuterportResults) return
+    
+    setLoadingOuterportResults(true)
+    try {
+      // Fetch Outerport results
+      const resultsResponse = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/outerport-results`)
+      setOuterportResults(resultsResponse.data)
+      
+      // Fetch plan image for highlighting
+      try {
+        const imageResponse = await axios.get(`${API_BASE_URL}/drainage/${analysisId}/image/plan`, {
+          responseType: 'blob'
+        })
+        const imageUrl = URL.createObjectURL(imageResponse.data)
+        setImageModalContent(imageUrl)
+      } catch (imageErr) {
+        console.warn('Could not load plan image for highlighting:', imageErr)
+        // Continue without image - the viewer will handle it
+      }
+      
+      setShowOuterportModal(true)
+    } catch (err) {
+      if (err.response?.status === 404) {
+        alert('Outerport results not yet available. Please wait for analysis to complete.')
+      } else {
+        alert(`Error loading Outerport results: ${err.response?.data?.error || err.message}`)
+      }
+    } finally {
+      setLoadingOuterportResults(false)
+    }
+  }
+
+  const closeOuterportModal = () => {
+    setShowOuterportModal(false)
+    setOuterportResults(null)
+  }
+
   // Helper function to format status for display
   const formatStatus = (status) => {
     if (!status) return 'Unknown'
@@ -489,6 +534,20 @@ function DrainagePlanAnalyzer() {
               placeholder="e.g., S-1, S-2, S-3"
             />
             <small>Comma-separated list of module labels</small>
+          </div>
+
+          <div className="form-group">
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                id="useOuterport"
+                checked={useOuterport}
+                onChange={(e) => setUseOuterport(e.target.checked)}
+                disabled={isUploading}
+              />
+              <span>Use Outerport for module extraction</span>
+            </label>
+            <small>If checked, uses Outerport service instead of Azure VR & symbol validation</small>
           </div>
 
           {error && (
@@ -766,20 +825,32 @@ function DrainagePlanAnalyzer() {
                 return statusStr === 'completed' || statusStr === '2'
               })() && (
                 <div className="results-actions">
-                  <button
-                    onClick={handleViewResults}
-                    disabled={loadingResults || !analysisId}
-                    className="btn btn-primary"
-                  >
-                    {loadingResults ? 'Loading...' : '📊 View Analysis Results'}
-                  </button>
-                  <button
-                    onClick={handleViewPipes}
-                    disabled={loadingPipes || !analysisId}
-                    className="btn btn-secondary"
-                  >
-                    {loadingPipes ? 'Loading...' : '🔧 View Detected Pipes'}
-                  </button>
+                  {useOuterport ? (
+                    <button
+                      onClick={handleViewOuterportResults}
+                      disabled={loadingOuterportResults || !analysisId}
+                      className="btn btn-primary"
+                    >
+                      {loadingOuterportResults ? 'Loading...' : '🔍 View Outerport Results'}
+                    </button>
+                  ) : (
+                    <>
+                      <button
+                        onClick={handleViewResults}
+                        disabled={loadingResults || !analysisId}
+                        className="btn btn-primary"
+                      >
+                        {loadingResults ? 'Loading...' : '📊 View Analysis Results'}
+                      </button>
+                      <button
+                        onClick={handleViewPipes}
+                        disabled={loadingPipes || !analysisId}
+                        className="btn btn-secondary"
+                      >
+                        {loadingPipes ? 'Loading...' : '🔧 View Detected Pipes'}
+                      </button>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -866,6 +937,15 @@ function DrainagePlanAnalyzer() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Outerport Results Modal */}
+        {showOuterportModal && outerportResults && (
+          <OuterportResultsViewer
+            imageUrl={imageModalContent}
+            results={outerportResults}
+            onClose={closeOuterportModal}
+          />
         )}
 
         {/* Results Modal */}
