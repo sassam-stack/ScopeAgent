@@ -75,13 +75,15 @@ public class OuterportService : IOuterportService
             imageContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
             content.Add(imageContent, "file", fileName);
             
-            // Add API key header
-            _httpClient.DefaultRequestHeaders.Authorization = null; // Clear any existing auth
-            _httpClient.DefaultRequestHeaders.Remove("X-API-Key");
-            _httpClient.DefaultRequestHeaders.Add("X-API-Key", _config.ApiKey);
+            // Create request message with API key header
+            using var request = new HttpRequestMessage(HttpMethod.Post, new Uri(url))
+            {
+                Content = content
+            };
+            request.Headers.Add("X-API-Key", _config.ApiKey);
             
             _logger.LogInformation("Sending request to Outerport service at {Url}", url);
-            var response = await _httpClient.PostAsync(new Uri(url), content);
+            var response = await _httpClient.SendAsync(request);
             
             if (!response.IsSuccessStatusCode)
             {

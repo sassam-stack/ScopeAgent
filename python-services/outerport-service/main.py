@@ -39,7 +39,7 @@ def get_api_key() -> str:
 
 def get_base_url() -> str:
     """Get base URL from environment variable or use default"""
-    return os.environ.get("OUTERPORT_BASE_URL", "http://localhost:8080")
+    return os.environ.get("OUTERPORT_BASE_URL", "https://api.outerport.com")
 
 
 @app.get("/health")
